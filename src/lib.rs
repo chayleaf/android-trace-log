@@ -17,6 +17,11 @@ use std::{
     str,
     time::Duration,
 };
+#[cfg(feature = "event_view")]
+use {
+    slotmap::{DefaultKey, SlotMap},
+    std::{collections::HashMap, sync::Arc},
+};
 
 /// Clock used for the trace log
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -127,6 +132,38 @@ pub struct Event {
     pub time: Time,
 }
 
+#[cfg(feature = "event_view")]
+/// A view into an event with convenience methods for accessing the associated thread and method. Use [`AndroidTrace::iter`] to get an iterator over these.
+#[derive(Clone, Debug)]
+pub struct EventView {
+    action: Action,
+    thread_id: DefaultKey,
+    threads: Arc<SlotMap<DefaultKey, Thread>>,
+    method_id: DefaultKey,
+    methods: Arc<SlotMap<DefaultKey, Method>>,
+    time: Time,
+}
+
+#[cfg(feature = "event_view")]
+impl EventView {
+    /// Event action
+    pub fn action(&self) -> Action {
+        self.action
+    }
+    /// Event thread
+    pub fn thread(&self) -> &Thread {
+        self.threads.get(self.thread_id).unwrap()
+    }
+    /// Event method
+    pub fn method(&self) -> &Method {
+        self.methods.get(self.method_id).unwrap()
+    }
+    /// Event time
+    pub fn time(&self) -> Time {
+        self.time
+    }
+}
+
 /// Android trace log
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub struct AndroidTrace {
@@ -179,8 +216,9 @@ impl Default for AndroidTrace {
 
 impl AndroidTrace {
     /// Serialize the trace into a Write object
-    /// 
-    /// Panics if using global clock (only used in file version 1) with 2-byte thread IDs (only used in file version 2+) or if some event's time doesn't match the trace's `clock` value.
+    ///
+    /// Panics if using global clock (only used in file version 1) with 2-byte thread IDs (only used in file version 2+)
+    /// or if some event's time doesn't match the trace's `clock` value.
     pub fn serialize_into<W: Write>(&self, w: &mut W) -> io::Result<()> {
         writeln!(w, "*version")?;
         let version: u16 = match self.clock {
@@ -231,9 +269,9 @@ impl AndroidTrace {
         writeln!(w, "*methods")?;
         for method in self.methods.iter() {
             if version <= 1 || method.id > 0 {
-                write!(w, "{:#x}", method.id)
+                write!(w, "{:#x}", method.id << 2)
             } else {
-                write!(w, "{}", method.id)
+                write!(w, "{}", method.id << 2)
             }?;
             write!(
                 w,
@@ -273,7 +311,11 @@ impl AndroidTrace {
         };
         for event in self.events.iter() {
             if version == 1 {
-                w.write_all(&u8::try_from(event.thread_id).expect("Thread ID too big for given log version (guessed from global clock type)").to_le_bytes())?;
+                w.write_all(
+                    &u8::try_from(event.thread_id)
+                    .expect("Thread ID too big for given log version (guessed from global clock type)")
+                    .to_le_bytes()
+                )?;
             } else {
                 w.write_all(&event.thread_id.to_le_bytes())?;
             }
@@ -323,6 +365,36 @@ impl AndroidTrace {
         let mut ret = Vec::new();
         self.serialize_into(&mut ret)?;
         Ok(ret)
+    }
+
+    /// Iterate over all events while preparing an event view that allows to quickly view an event's thread and method.
+    /// Has some startup time due to needing to prepare method/thread lookup tables.
+    ///
+    /// Panics if an event has an invalid method/thread ID
+    #[cfg(feature = "event_view")]
+    pub fn iter(&self) -> impl Iterator<Item = EventView> + '_ {
+        let mut methods = SlotMap::new();
+        let mut threads = SlotMap::new();
+        let mut method_keys = HashMap::new();
+        let mut thread_keys = HashMap::new();
+        for method in self.methods.iter() {
+            let key = methods.insert(method.clone());
+            method_keys.insert(method.id, key);
+        }
+        for thread in self.threads.iter() {
+            let key = threads.insert(thread.clone());
+            thread_keys.insert(thread.id, key);
+        }
+        let methods = Arc::new(methods);
+        let threads = Arc::new(threads);
+        self.events.iter().map(move |event| EventView {
+            action: event.action,
+            time: event.time,
+            methods: methods.clone(),
+            threads: threads.clone(),
+            method_id: method_keys[&event.method_id],
+            thread_id: thread_keys[&event.thread_id],
+        })
     }
 }
 
@@ -532,7 +604,8 @@ fn parse_thread(input: &[u8]) -> IResult<&[u8], Thread> {
 }
 
 fn parse_method(input: &[u8]) -> IResult<&[u8], Method> {
-    let (input, id) = parse_num(input)?;
+    let (input, id) = parse_num::<u32>(input)?;
+    let id = id >> 2;
     let (input, _) = tag(b"\t")(input)?;
     let (input, class_name) = take_str_until(b"\t")(input)?;
     let (input, name) = take_str_until(b"\t")(input)?;
