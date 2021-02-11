@@ -12,17 +12,14 @@ use nom::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashMap,
     convert::TryFrom,
     error, fmt,
     io::{self, Write},
     num::{NonZeroU64, ParseIntError},
     str,
+    sync::Arc,
     time::Duration,
-};
-#[cfg(feature = "event_view")]
-use {
-    slotmap::{DefaultKey, SlotMap},
-    std::{collections::HashMap, sync::Arc},
 };
 
 /// Clock used for the trace log
@@ -38,6 +35,12 @@ pub enum Clock {
     Dual,
 }
 
+impl Default for Clock {
+    fn default() -> Self {
+        Self::Global
+    }
+}
+
 /// An event time offset since the trace start.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Time {
@@ -50,12 +53,6 @@ pub enum Time {
         /// Wall time
         wall: Option<Duration>,
     },
-}
-
-impl Default for Clock {
-    fn default() -> Self {
-        Self::Global
-    }
 }
 
 /// The process VM
@@ -134,19 +131,17 @@ pub struct Event {
     pub time: Time,
 }
 
-#[cfg(feature = "event_view")]
 /// A view into an event with convenience methods for accessing the associated thread and method. Use [`AndroidTrace::iter`] to get an iterator over these.
 #[derive(Clone, Debug)]
 pub struct EventView {
     action: Action,
-    thread_id: DefaultKey,
-    threads: Arc<SlotMap<DefaultKey, Thread>>,
-    method_id: DefaultKey,
-    methods: Arc<SlotMap<DefaultKey, Method>>,
+    thread_id: usize,
+    threads: Arc<Vec<Thread>>,
+    method_id: usize,
+    methods: Arc<Vec<Method>>,
     time: Time,
 }
 
-#[cfg(feature = "event_view")]
 impl EventView {
     /// Event action
     pub fn action(&self) -> Action {
@@ -176,7 +171,7 @@ pub struct AndroidTrace {
     /// Total recording duration
     pub elapsed_time: Duration,
     /// Total number of calls registered
-    pub num_method_calls: u64,
+    pub total_method_calls: u64,
     /// The approximate trace overhead per call
     pub clock_call_overhead: Duration,
     /// The process VM used
@@ -203,7 +198,7 @@ impl Default for AndroidTrace {
             data_file_overflow: Default::default(),
             clock: Default::default(),
             elapsed_time: Default::default(),
-            num_method_calls: Default::default(),
+            total_method_calls: Default::default(),
             clock_call_overhead: Default::default(),
             vm: Default::default(),
             start_time: chrono::Utc.ymd(1970, 1, 1).and_hms(0, 0, 0),
@@ -242,7 +237,7 @@ impl AndroidTrace {
             }
         )?;
         writeln!(w, "elapsed-time-usec={}", self.elapsed_time.as_micros())?;
-        writeln!(w, "num-method-calls={}", self.num_method_calls)?;
+        writeln!(w, "num-method-calls={}", self.total_method_calls)?;
         writeln!(
             w,
             "clock-call-overhead-nsec={}",
@@ -373,19 +368,16 @@ impl AndroidTrace {
     /// Has some startup time due to needing to prepare method/thread lookup tables.
     ///
     /// Panics if an event has an invalid method/thread ID
-    #[cfg(feature = "event_view")]
     pub fn iter(&self) -> impl Iterator<Item = EventView> + '_ {
-        let mut methods = SlotMap::new();
-        let mut threads = SlotMap::new();
+        let methods = self.methods.clone();
+        let threads = self.threads.clone();
         let mut method_keys = HashMap::new();
         let mut thread_keys = HashMap::new();
-        for method in self.methods.iter() {
-            let key = methods.insert(method.clone());
-            method_keys.insert(method.id, key);
+        for (i, method) in methods.iter().enumerate() {
+            method_keys.insert(method.id, i);
         }
-        for thread in self.threads.iter() {
-            let key = threads.insert(thread.clone());
-            thread_keys.insert(thread.id, key);
+        for (i, thread) in self.threads.iter().enumerate() {
+            thread_keys.insert(thread.id, i);
         }
         let methods = Arc::new(methods);
         let threads = Arc::new(threads);
@@ -719,7 +711,7 @@ fn parse_android_trace(input: &[u8]) -> IResult<&[u8], AndroidTrace> {
                     Line::Info(DataFileOverflow(v)) => ret.data_file_overflow = v,
                     Line::Info(Clock(v)) => ret.clock = v,
                     Line::Info(ElapsedTime(v)) => ret.elapsed_time = v,
-                    Line::Info(NumMethodCalls(v)) => ret.num_method_calls = v,
+                    Line::Info(NumMethodCalls(v)) => ret.total_method_calls = v,
                     Line::Info(ClockCallOverhead(v)) => ret.clock_call_overhead = v,
                     Line::Info(Vm(v)) => ret.vm = v,
                     Line::Info(Pid(v)) => ret.pid = Some(v),
@@ -1064,7 +1056,7 @@ mod tests {
             data_file_overflow: true,
             clock: Clock::Dual,
             elapsed_time: Duration::from_secs(10),
-            num_method_calls: 2,
+            total_method_calls: 2,
             clock_call_overhead: Duration::from_nanos(100),
             vm: Vm::Art,
             start_time: now
