@@ -368,14 +368,18 @@ impl AndroidTrace {
     ///
     /// Panics if an event has an invalid method/thread ID
     pub fn iter(&self) -> impl Iterator<Item = EventView<'_>> {
-        let mut method_keys = HashMap::new();
-        let mut thread_keys = HashMap::new();
-        for (i, method) in self.methods.iter().enumerate() {
-            method_keys.insert(method.id, i);
-        }
-        for (i, thread) in self.threads.iter().enumerate() {
-            thread_keys.insert(thread.id, i);
-        }
+        let method_keys = self
+            .methods
+            .iter()
+            .enumerate()
+            .map(|(i, method)| (method.id, i))
+            .collect::<HashMap<_, _>>();
+        let thread_keys = self
+            .threads
+            .iter()
+            .enumerate()
+            .map(|(i, thread)| (thread.id, i))
+            .collect::<HashMap<_, _>>();
         self.events.iter().map(move |event| EventView {
             action: event.action,
             time: event.time,
@@ -841,10 +845,7 @@ pub fn parse(bytes: &[u8]) -> Result<AndroidTrace, Box<dyn error::Error + '_>> {
 
 mod tests {
     #[allow(unused_imports)]
-    use {
-        chrono::DurationRound,
-        crate::*,
-    };
+    use {crate::*, chrono::DurationRound};
 
     #[test]
     fn section_names() {
