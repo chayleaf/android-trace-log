@@ -367,7 +367,7 @@ impl AndroidTrace {
     /// Has some startup time due to needing to prepare method/thread lookup tables.
     ///
     /// Panics if an event has an invalid method/thread ID
-    pub fn iter(&self) -> impl Iterator<Item = EventView<'_>> + '_ {
+    pub fn iter(&self) -> impl Iterator<Item = EventView<'_>> {
         let mut method_keys = HashMap::new();
         let mut thread_keys = HashMap::new();
         for (i, method) in self.methods.iter().enumerate() {
