@@ -18,7 +18,6 @@ use std::{
     io::{self, Write},
     num::{NonZeroU64, ParseIntError},
     str,
-    sync::Arc,
     time::Duration,
 };
 
@@ -133,16 +132,16 @@ pub struct Event {
 
 /// A view into an event with convenience methods for accessing the associated thread and method. Use [`AndroidTrace::iter`] to get an iterator over these.
 #[derive(Clone, Debug)]
-pub struct EventView {
+pub struct EventView<'a> {
     action: Action,
     thread_id: usize,
-    threads: Arc<Vec<Thread>>,
+    threads: &'a Vec<Thread>,
     method_id: usize,
-    methods: Arc<Vec<Method>>,
+    methods: &'a Vec<Method>,
     time: Time,
 }
 
-impl EventView {
+impl<'a> EventView<'a> {
     /// Event action
     pub fn action(&self) -> Action {
         self.action
@@ -368,24 +367,20 @@ impl AndroidTrace {
     /// Has some startup time due to needing to prepare method/thread lookup tables.
     ///
     /// Panics if an event has an invalid method/thread ID
-    pub fn iter(&self) -> impl Iterator<Item = EventView> + '_ {
-        let methods = self.methods.clone();
-        let threads = self.threads.clone();
+    pub fn iter(&self) -> impl Iterator<Item = EventView<'_>> + '_ {
         let mut method_keys = HashMap::new();
         let mut thread_keys = HashMap::new();
-        for (i, method) in methods.iter().enumerate() {
+        for (i, method) in self.methods.iter().enumerate() {
             method_keys.insert(method.id, i);
         }
         for (i, thread) in self.threads.iter().enumerate() {
             thread_keys.insert(thread.id, i);
         }
-        let methods = Arc::new(methods);
-        let threads = Arc::new(threads);
         self.events.iter().map(move |event| EventView {
             action: event.action,
             time: event.time,
-            methods: methods.clone(),
-            threads: threads.clone(),
+            methods: &self.methods,
+            threads: &self.threads,
             method_id: method_keys[&event.method_id],
             thread_id: thread_keys[&event.thread_id],
         })
