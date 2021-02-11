@@ -945,6 +945,9 @@ mod tests {
             parse_header_line(b"gc-count=420\n"),
             Ok((b"" as _, HeaderLine::GcCount(420)))
         );
+    }
+    #[test]
+    fn threads() {
         assert_eq!(
             parse_thread(b"13337\tA thread\n"),
             Ok((
@@ -955,6 +958,9 @@ mod tests {
                 }
             ))
         );
+    }
+    #[test]
+    fn methods() {
         assert_eq!(
             parse_method(b"0xeb0\tclass\tname\tsig\tfile\t123\n"),
             Ok((
@@ -997,6 +1003,9 @@ mod tests {
                 }
             ))
         );
+    }
+    #[test]
+    fn events() {
         let parser1 = event_parser(Version::One, Clock::Global);
         assert_eq!(
             parser1(b"\x45\x04\x00\x00\x00\x01\x00\x00\x00"),
@@ -1046,7 +1055,10 @@ mod tests {
             ))
         );
         assert!(parser3(b"\xFF\xFF\x02\x00\x00\x00\x10\x00\x00\x00\x20\x00\x00\x00").is_err());
+    }
 
+    #[test]
+    fn trace_and_event_view() {
         let now = chrono::Utc::now();
         let trace = AndroidTrace {
             data_file_overflow: true,
