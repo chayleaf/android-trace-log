@@ -12,7 +12,7 @@ use nom::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     convert::TryFrom,
     error, fmt,
     io::{self, Write},
@@ -130,7 +130,7 @@ pub struct Event {
     pub time: Time,
 }
 
-/// A view into an event with convenience methods for accessing the associated thread and method. Use [`AndroidTrace::iter`] to get an iterator over these.
+/// A view into an event with convenience methods for accessing the associated thread and method. Use [`AndroidTraceLog::iter`] to get an iterator over these.
 #[derive(Clone, Debug)]
 pub struct EventView<'a> {
     action: Action,
@@ -162,7 +162,7 @@ impl<'a> EventView<'a> {
 
 /// Android trace log
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
-pub struct AndroidTrace {
+pub struct AndroidTraceLog {
     /// Whether the trace has overflowed the trace buffer and is missing events
     pub data_file_overflow: bool,
     /// The clock used for the events
@@ -190,7 +190,7 @@ pub struct AndroidTrace {
     pub events: Vec<Event>,
 }
 
-impl Default for AndroidTrace {
+impl Default for AndroidTraceLog {
     fn default() -> Self {
         use chrono::TimeZone;
         Self {
@@ -210,11 +210,55 @@ impl Default for AndroidTrace {
     }
 }
 
-impl AndroidTrace {
+impl AndroidTraceLog {
+    /// Verifies the object can be serialized and iterated over
+    pub fn valid(&self) -> bool {
+        let method_ids = self.methods.iter().map(|x| x.id).collect::<HashSet<_>>();
+        let thread_ids = self.threads.iter().map(|x| x.id).collect::<HashSet<_>>();
+        for event in self.events.iter() {
+            if !method_ids.contains(&event.method_id) || !thread_ids.contains(&event.thread_id) {
+                return false;
+            }
+            match (self.clock, event.time) {
+                (Clock::Global, Time::Global(_)) => {
+                    if event.thread_id > 0xFF {
+                        return false;
+                    }
+                }
+                (
+                    Clock::Cpu,
+                    Time::Monotonic {
+                        cpu: Some(_),
+                        wall: None,
+                    },
+                ) => {}
+                (
+                    Clock::Wall,
+                    Time::Monotonic {
+                        cpu: None,
+                        wall: Some(_),
+                    },
+                ) => {}
+                (
+                    Clock::Dual,
+                    Time::Monotonic {
+                        cpu: Some(_),
+                        wall: Some(_),
+                    },
+                ) => {}
+                _ => return false,
+            }
+            if event.method_id > (0xFFFFFFFF >> 2) {
+                return false;
+            }
+        }
+        true
+    }
+
     /// Serialize the trace into a Write object
     ///
     /// Panics if using global clock (only used in file version 1) with 2-byte thread IDs (only used in file version 2+)
-    /// or if some event's time doesn't match the trace's `clock` value.
+    /// or if some event's time doesn't match the trace's `clock` value. Will not panic if [`valid`](AndroidTraceLog::valid) returned `true`.
     pub fn serialize_into<W: Write>(&self, w: &mut W) -> io::Result<()> {
         writeln!(w, "*version")?;
         let version: u16 = match self.clock {
@@ -356,17 +400,17 @@ impl AndroidTrace {
         Ok(())
     }
 
-    /// Serialize the trace into a byte array
+    /// Serialize the trace into a byte array. Can panic if the log is invalid; see [`serialize_into`](AndroidTraceLog::serialize_into)
     pub fn serialize(&self) -> io::Result<Vec<u8>> {
         let mut ret = Vec::new();
         self.serialize_into(&mut ret)?;
         Ok(ret)
     }
 
-    /// Iterate over all events while preparing an event view that allows to quickly view an event's thread and method.
+    /// Iterate over all events while preparing an event view that allows to quickly access an event's thread and method.
     /// Has some startup time due to needing to prepare method/thread lookup tables.
     ///
-    /// Panics if an event has an invalid method/thread ID
+    /// Panics if an event has an invalid method/thread ID. Will not panic if [`valid`](AndroidTraceLog::valid) returned `true`.
     pub fn iter(&self) -> impl Iterator<Item = EventView<'_>> {
         let method_keys = self
             .methods
@@ -661,8 +705,8 @@ fn parse_section(input: &[u8]) -> IResult<&[u8], Section> {
     )(input)
 }
 
-fn parse_android_trace(input: &[u8]) -> IResult<&[u8], AndroidTrace> {
-    let mut ret = AndroidTrace::default();
+fn parse_android_trace(input: &[u8]) -> IResult<&[u8], AndroidTraceLog> {
+    let mut ret = AndroidTraceLog::default();
     let (input, _) = tag(b"*version\n")(input)?;
     let mut section = Section::Version;
     let (input, version) = map_res(parse_num, |x| match x {
@@ -811,12 +855,12 @@ fn parse_android_trace(input: &[u8]) -> IResult<&[u8], AndroidTrace> {
 /// # fn _unused() -> Result<(), Error> {
 /// let mut trace_bytes = Vec::new();
 /// fs::File::open("dmtrace.trace")?.read_to_end(&mut trace_bytes);
-/// let trace = android_trace_parser::parse(&trace_bytes[..])?;
+/// let trace = android_trace_log::parse(&trace_bytes[..])?;
 /// # let _ = trace;
 /// # Ok(())
 /// # }
 /// ```
-pub fn parse(bytes: &[u8]) -> Result<AndroidTrace, Box<dyn error::Error + '_>> {
+pub fn parse(bytes: &[u8]) -> Result<AndroidTraceLog, Box<dyn error::Error + '_>> {
     Ok(parse_android_trace(bytes)?.1)
 }
 
@@ -1025,7 +1069,7 @@ mod tests {
     #[test]
     fn trace_and_event_view() {
         let now = chrono::Utc::now();
-        let trace = AndroidTrace {
+        let trace = AndroidTraceLog {
             data_file_overflow: true,
             clock: Clock::Dual,
             elapsed_time: Duration::from_secs(10),
@@ -1147,6 +1191,7 @@ mod tests {
             (&trace.methods[1], &trace.threads[1])
         );
         assert!(iter.next().is_none());
+        assert!(trace.valid());
 
         let trace2 = parse(&trace.serialize().unwrap()).unwrap();
         assert_eq!(trace, trace2);

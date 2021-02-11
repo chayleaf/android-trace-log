@@ -1,8 +1,14 @@
 [package]
-name = "android_trace_parser"
+name = "android_trace_log"
 version = "0.1.0"
 authors = ["Ivan Pavlyuk <ivanpavluk00@gmail.com>"]
 edition = "2018"
+description = "A crate for handling Android trace logs created with Debug.startMethodTracing"
+readme = "README.md"
+repository = "https://github.com/pavlukivan/android_trace_log/"
+license = "MIT OR Apache-2.0"
+keywords = ["android", "trace", "parser"]
+categories = ["parser-implementations"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

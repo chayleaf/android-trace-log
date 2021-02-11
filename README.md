@@ -1,6 +1,6 @@
-# Android Trace Parser
+# Android Trace Log
 
-A parser for Android trace files created with android.os.Debug.startMethodTracing
+A library for handling Android trace files created with android.os.Debug.startMethodTracing
 
 # Reference
 
