@@ -1,18 +1,20 @@
 pub use chrono;
 use nom::{
     branch::alt,
-    bytes::complete::{tag, take, take_till, take_until, take_while1},
-    combinator::map_res,
-    error::ErrorKind,
-    AsChar, IResult,
+    bytes::complete::{is_a, is_not, tag, take, take_while},
+    character::complete::{digit1, hex_digit1, tab},
+    combinator::{map, map_res, opt, value},
+    error::ParseError,
+    multi::many0,
+    number::complete::{le_u16, le_u32, le_u64, le_u8},
+    sequence::{delimited, pair, terminated, tuple},
+    IResult,
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    array::TryFromSliceError,
-    convert::{TryFrom, TryInto},
+    convert::TryFrom,
     error, fmt,
     io::{self, Write},
-    mem,
     num::{NonZeroU64, ParseIntError},
     str,
     time::Duration,
@@ -404,21 +406,11 @@ trait Num: Sized {
     fn from_slice_radix(s: &[u8], radix: u32) -> Result<Self, ParseIntError> {
         Self::from_str_radix(str::from_utf8(s).unwrap(), radix)
     }
-
-    fn from_slice_bin(s: &[u8]) -> Result<Self, TryFromSliceError>;
-
-    fn parse_bin(input: &[u8]) -> IResult<&[u8], Self> {
-        map_res(take(mem::size_of::<Self>()), Self::from_slice_bin)(input)
-    }
 }
 
 impl Num for usize {
     fn from_str_radix(s: &str, radix: u32) -> Result<Self, ParseIntError> {
         Self::from_str_radix(s, radix)
-    }
-
-    fn from_slice_bin(s: &[u8]) -> Result<Self, TryFromSliceError> {
-        Ok(Self::from_le_bytes(s.try_into()?))
     }
 }
 
@@ -426,19 +418,11 @@ impl Num for u64 {
     fn from_str_radix(s: &str, radix: u32) -> Result<Self, ParseIntError> {
         Self::from_str_radix(s, radix)
     }
-
-    fn from_slice_bin(s: &[u8]) -> Result<Self, TryFromSliceError> {
-        Ok(Self::from_le_bytes(s.try_into()?))
-    }
 }
 
 impl Num for u32 {
     fn from_str_radix(s: &str, radix: u32) -> Result<Self, ParseIntError> {
         Self::from_str_radix(s, radix)
-    }
-
-    fn from_slice_bin(s: &[u8]) -> Result<Self, TryFromSliceError> {
-        Ok(Self::from_le_bytes(s.try_into()?))
     }
 }
 
@@ -446,46 +430,45 @@ impl Num for u16 {
     fn from_str_radix(s: &str, radix: u32) -> Result<Self, ParseIntError> {
         Self::from_str_radix(s, radix)
     }
-
-    fn from_slice_bin(s: &[u8]) -> Result<Self, TryFromSliceError> {
-        Ok(Self::from_le_bytes(s.try_into()?))
-    }
 }
 
 impl Num for u8 {
     fn from_str_radix(s: &str, radix: u32) -> Result<Self, ParseIntError> {
         Self::from_str_radix(s, radix)
     }
-
-    fn from_slice_bin(s: &[u8]) -> Result<Self, TryFromSliceError> {
-        Ok(Self::from_le_bytes(s.try_into()?))
-    }
 }
 
 fn hex_primary<T: Num>(input: &[u8]) -> IResult<&[u8], T> {
     let (input, _) = tag("0x")(input)?;
-    map_res(take_while1(|c: u8| c.is_hex_digit()), |s| {
-        Num::from_slice_radix(s, 16)
-    })(input)
+    map_res(hex_digit1, |s| Num::from_slice_radix(s, 16))(input)
 }
 
 fn dec_primary<T: Num + fmt::Debug>(input: &[u8]) -> IResult<&[u8], T> {
-    map_res(take_while1(|c: u8| c.is_dec_digit()), |s| {
-        Num::from_slice_radix(s, 10)
-    })(input)
+    map_res(digit1, |s| Num::from_slice_radix(s, 10))(input)
 }
 
 fn parse_num<T: Num + fmt::Debug>(input: &[u8]) -> IResult<&[u8], T> {
     alt((hex_primary, dec_primary))(input)
 }
 
-/// Returns everything before the tag (Consumes the tag)
-fn take_str_until<'a>(tag: &'a [u8]) -> impl Fn(&[u8]) -> IResult<&[u8], &str> + 'a {
-    move |input| {
-        let (input, ret) = map_res(take_until(tag), str::from_utf8)(input)?;
-        let (input, _) = nom::bytes::complete::tag(tag)(input)?;
-        Ok((input, ret))
-    }
+fn parse_bool(input: &[u8]) -> IResult<&[u8], bool> {
+    alt((value(false, tag(b"false")), value(true, tag(b"true"))))(input)
+}
+
+fn parse_clock(input: &[u8]) -> IResult<&[u8], Clock> {
+    alt((
+        value(Clock::Global, tag(b"global")),
+        value(Clock::Cpu, tag(b"thread-cpu")),
+        value(Clock::Wall, tag(b"wall")),
+        value(Clock::Dual, tag(b"dual")),
+    ))(input)
+}
+
+fn parse_vm(input: &[u8]) -> IResult<&[u8], Vm> {
+    alt((
+        value(Vm::Dalvik, tag(b"dalvik")),
+        value(Vm::Art, tag(b"art")),
+    ))(input)
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -503,137 +486,88 @@ enum HeaderLine {
 }
 
 fn parse_header_line(input: &[u8]) -> IResult<&[u8], HeaderLine> {
-    let (input, k) = alt((
-        tag(b"data-file-overflow="),
-        tag(b"clock="),
-        tag(b"elapsed-time-usec="),
-        tag(b"num-method-calls="),
-        tag(b"clock-call-overhead-nsec="),
-        tag(b"vm="),
-        tag(b"pid="),
-        tag(b"alloc-count="),
-        tag(b"alloc-size="),
-        tag(b"gc-count="),
-    ))(input)?;
-    Ok(match k {
-        b"data-file-overflow=" => {
-            let (input, v) = match alt((tag(b"true\n"), tag(b"false\n")))(input)? {
-                (input, b"true\n") => (input, true),
-                (input, b"false\n") => (input, false),
-                _ => unreachable!(),
-            };
-            (input, HeaderLine::DataFileOverflow(v))
-        }
-        b"clock=" => {
-            let (input, v) = match alt((
-                tag(b"global\n"),
-                tag(b"thread-cpu\n"),
-                tag(b"wall\n"),
-                tag(b"dual\n"),
-            ))(input)?
-            {
-                (input, b"global\n") => (input, Clock::Global),
-                (input, b"thread-cpu\n") => (input, Clock::Cpu),
-                (input, b"wall\n") => (input, Clock::Wall),
-                (input, b"dual\n") => (input, Clock::Dual),
-                _ => unreachable!(),
-            };
-            (input, HeaderLine::Clock(v))
-        }
-        b"elapsed-time-usec=" => {
-            let (input, v) = parse_num(input)?;
-            let (input, _) = tag(b"\n")(input)?;
-            (input, HeaderLine::ElapsedTime(Duration::from_micros(v)))
-        }
-        b"num-method-calls=" => {
-            let (input, v) = parse_num(input)?;
-            let (input, _) = tag(b"\n")(input)?;
-            (input, HeaderLine::NumMethodCalls(v))
-        }
-        b"clock-call-overhead-nsec=" => {
-            let (input, v) = parse_num(input)?;
-            let (input, _) = tag(b"\n")(input)?;
-            (
-                input,
-                HeaderLine::ClockCallOverhead(Duration::from_nanos(v)),
-            )
-        }
-        b"vm=" => {
-            let (input, v) = match alt((tag(b"dalvik\n"), tag(b"art\n")))(input)? {
-                (input, b"dalvik\n") => (input, Vm::Dalvik),
-                (input, b"art\n") => (input, Vm::Art),
-                _ => unreachable!(),
-            };
-            (input, HeaderLine::Vm(v))
-        }
-        b"pid=" => {
-            let (input, v) = parse_num(input)?;
-            let (input, _) = tag(b"\n")(input)?;
-            (input, HeaderLine::Pid(v))
-        }
-        b"alloc-count=" => {
-            let (input, v) = parse_num(input)?;
-            let (input, _) = tag(b"\n")(input)?;
-            (input, HeaderLine::AllocCount(v))
-        }
-        b"alloc-size=" => {
-            let (input, v) = parse_num(input)?;
-            let (input, _) = tag(b"\n")(input)?;
-            (input, HeaderLine::AllocSize(v))
-        }
-        b"gc-count=" => {
-            let (input, v) = parse_num(input)?;
-            let (input, _) = tag(b"\n")(input)?;
-            (input, HeaderLine::GcCount(v))
-        }
-        _ => unreachable!(),
-    })
+    fn header_line<'a, T, F, E>(
+        tag_name: &'a [u8],
+        parser: F,
+    ) -> impl FnMut(&'a [u8]) -> IResult<&'a [u8], T, E> + 'a
+    where
+        T: 'a,
+        F: FnMut(&'a [u8]) -> IResult<&'a [u8], T, E> + 'a,
+        E: ParseError<&'a [u8]> + 'a,
+        E: 'a,
+    {
+        delimited(pair(tag(tag_name), tag(b"=")), parser, tag(b"\n"))
+    }
+
+    alt((
+        header_line(
+            b"data-file-overflow",
+            map(parse_bool, HeaderLine::DataFileOverflow),
+        ),
+        header_line(b"clock", map(parse_clock, HeaderLine::Clock)),
+        header_line(
+            b"elapsed-time-usec",
+            map(parse_num::<u64>, |x| {
+                HeaderLine::ElapsedTime(Duration::from_micros(x))
+            }),
+        ),
+        header_line(
+            b"num-method-calls",
+            map(parse_num::<u64>, HeaderLine::NumMethodCalls),
+        ),
+        header_line(
+            b"clock-call-overhead-nsec",
+            map(parse_num::<u64>, |x| {
+                HeaderLine::ClockCallOverhead(Duration::from_nanos(x))
+            }),
+        ),
+        header_line(b"vm", map(parse_vm, HeaderLine::Vm)),
+        header_line(b"pid", map(parse_num::<u32>, HeaderLine::Pid)),
+        header_line(
+            b"alloc-count",
+            map(parse_num::<u64>, HeaderLine::AllocCount),
+        ),
+        header_line(b"alloc-size", map(parse_num::<u64>, HeaderLine::AllocSize)),
+        header_line(b"gc-count", map(parse_num::<u64>, HeaderLine::GcCount)),
+    ))(input)
+}
+
+fn terminated_with<'a>(until: &'a [u8]) -> impl FnMut(&'a [u8]) -> IResult<&'a [u8], &'a str> + 'a {
+    terminated(map_res(is_not(until), str::from_utf8), is_a(until))
 }
 
 fn parse_thread(input: &[u8]) -> IResult<&[u8], Thread> {
-    let (input, id) = parse_num::<u16>(input)?;
-    let (input, _) = tag(b"\t")(input)?;
-    let (input, name) = take_str_until(b"\n")(input)?;
-    Ok((
-        input,
-        Thread {
+    map(
+        pair(terminated(parse_num::<u16>, tab), terminated_with(b"\n")),
+        |(id, name)| Thread {
             id,
             name: name.into(),
         },
-    ))
+    )(input)
 }
 
 fn parse_method(input: &[u8]) -> IResult<&[u8], Method> {
-    let (input, id) = parse_num::<u32>(input)?;
-    let id = id >> 2;
-    let (input, _) = tag(b"\t")(input)?;
-    let (input, class_name) = take_str_until(b"\t")(input)?;
-    let (input, name) = take_str_until(b"\t")(input)?;
-    let (input, signature) = take_str_until(b"\t")(input)?;
-    let (input, source_file) =
-        map_res(take_till(|c| c == b'\t' || c == b'\n'), str::from_utf8)(input)?;
-
-    let (input, source_line) =
-        if let Ok((input, _)) = tag::<_, _, (&[u8], ErrorKind)>(b"\t\n")(input) {
-            (input, None)
-        } else if let Ok((input, _)) = tag::<_, _, (&[u8], ErrorKind)>(b"\t")(input) {
-            let (input, num) = parse_num(input)?;
-            (input, Some(num))
-        } else {
-            (input, None)
-        };
-    let (input, _) = tag(b"\n")(input)?;
-    Ok((
-        input,
-        Method {
-            id,
+    map(
+        tuple((
+            terminated(parse_num::<u32>, tab),
+            terminated_with(b"\t"),
+            terminated_with(b"\t"),
+            terminated_with(b"\t"),
+            map_res(take_while(|x| x != b'\n' && x != b'\t'), str::from_utf8),
+            alt((
+                value(None, tag(b"\n")),
+                delimited(tag(b"\t"), opt(parse_num::<u32>), tag(b"\n")),
+            )),
+        )),
+        |(id, class_name, name, signature, source_file, source_line)| Method {
+            id: id >> 2,
             class_name: class_name.into(),
             signature: signature.into(),
             name: name.into(),
             source_file: source_file.into(),
             source_line,
         },
-    ))
+    )(input)
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
@@ -670,13 +604,10 @@ fn event_parser(version: Version, clock: Clock) -> impl Fn(&[u8]) -> IResult<&[u
     };
     move |input: &[u8]| -> IResult<&[u8], Event> {
         let (input, thread_id) = match version {
-            Version::One => {
-                let (input, thread_id) = u8::parse_bin(input)?;
-                (input, thread_id as _)
-            }
-            _ => u16::parse_bin(input)?,
+            Version::One => map(le_u8, |thread_id| thread_id.into())(input)?,
+            _ => le_u16(input)?,
         };
-        let (input, (action, method_id)) = map_res(u32::parse_bin, |x| {
+        let (input, (action, method_id)) = map_res(le_u32, |x| {
             let action = match x & 0b11 {
                 0 => Action::Enter,
                 1 => Action::Exit,
@@ -685,19 +616,13 @@ fn event_parser(version: Version, clock: Clock) -> impl Fn(&[u8]) -> IResult<&[u
             };
             Ok((action, x >> 2))
         })(input)?;
-        let (input, time_a) = u32::parse_bin(input)?;
+        let (input, time_a) = le_u32(input)?;
         let time_a = Duration::from_micros(time_a as _);
         let (mut input, time) = match clock {
-            Clock::Dual => {
-                let (input, time_b) = u32::parse_bin(input)?;
-                (
-                    input,
-                    Time::Monotonic {
-                        cpu: Some(time_a),
-                        wall: Some(Duration::from_micros(time_b as _)),
-                    },
-                )
-            }
+            Clock::Dual => map(le_u32, |time_b| Time::Monotonic {
+                cpu: Some(time_a),
+                wall: Some(Duration::from_micros(time_b as _)),
+            })(input)?,
             Clock::Cpu => (
                 input,
                 Time::Monotonic {
@@ -716,12 +641,13 @@ fn event_parser(version: Version, clock: Clock) -> impl Fn(&[u8]) -> IResult<&[u
         };
 
         if let Version::Three(Some(event_size)) = version {
-            let bytes_read = match version {
+            let bytes_read = match version { // Thread ID
                 Version::One => 1,
                 _ => 2,
-            } + 4
-                + 4
-                + match clock {
+            }
+                + 4 // Action + method ID
+                + 4 // Time A
+                + match clock { // Time B
                     Clock::Dual => 4,
                     _ => 0,
                 };
@@ -752,24 +678,19 @@ enum Section {
 }
 
 fn parse_section(input: &[u8]) -> IResult<&[u8], Section> {
-    let (input, _) = tag(b"*")(input)?;
-    match alt((
-        tag(b"version\n"),
-        tag(b"threads\n"),
-        tag(b"methods\n"),
-        tag(b"end\n"),
-    ))(input)
-    {
-        Ok((input, b"version\n")) => Ok((input, Section::Version)),
-        Ok((input, b"threads\n")) => Ok((input, Section::Threads)),
-        Ok((input, b"methods\n")) => Ok((input, Section::Methods)),
-        Ok((input, b"end\n")) => Ok((input, Section::End)),
-        Err(err) => Err(err),
-        _ => unreachable!(),
-    }
+    delimited(
+        tag(b"*"),
+        alt((
+            value(Section::Version, tag(b"version")),
+            value(Section::Threads, tag(b"threads")),
+            value(Section::Methods, tag(b"methods")),
+            value(Section::End, tag(b"end")),
+        )),
+        tag(b"\n"),
+    )(input)
 }
 
-fn parse_android_trace<'a>(input: &'a [u8]) -> IResult<&'a [u8], AndroidTrace> {
+fn parse_android_trace(input: &[u8]) -> IResult<&[u8], AndroidTrace> {
     let mut ret = AndroidTrace::default();
     let (input, _) = tag(b"*version\n")(input)?;
     let mut section = Section::Version;
@@ -788,14 +709,8 @@ fn parse_android_trace<'a>(input: &'a [u8]) -> IResult<&'a [u8], AndroidTrace> {
                     Info(HeaderLine),
                 }
                 let (inp, line) = alt((
-                    |input| {
-                        let (input, section) = parse_section(input)?;
-                        Ok((input, Line::NewSection(section)))
-                    },
-                    |input| {
-                        let (input, line) = parse_header_line(input)?;
-                        Ok((input, Line::Info(line)))
-                    },
+                    map(parse_section, Line::NewSection),
+                    map(parse_header_line, Line::Info),
                 ))(input)?;
                 input = inp;
                 use HeaderLine::*;
@@ -827,14 +742,8 @@ fn parse_android_trace<'a>(input: &'a [u8]) -> IResult<&'a [u8], AndroidTrace> {
                     Thread(Thread),
                 }
                 let (inp, line) = alt((
-                    |input| {
-                        let (input, section) = parse_section(input)?;
-                        Ok((input, Line::NewSection(section)))
-                    },
-                    |input| {
-                        let (input, thread) = parse_thread(input)?;
-                        Ok((input, Line::Thread(thread)))
-                    },
+                    map(parse_section, Line::NewSection),
+                    map(parse_thread, Line::Thread),
                 ))(input)?;
                 input = inp;
                 match line {
@@ -848,14 +757,8 @@ fn parse_android_trace<'a>(input: &'a [u8]) -> IResult<&'a [u8], AndroidTrace> {
                     Method(Method),
                 }
                 let (inp, line) = alt((
-                    |input| {
-                        let (input, section) = parse_section(input)?;
-                        Ok((input, Line::NewSection(section)))
-                    },
-                    |input| {
-                        let (input, method) = parse_method(input)?;
-                        Ok((input, Line::Method(method)))
-                    },
+                    map(parse_section, Line::NewSection),
+                    map(parse_method, Line::Method),
                 ))(input)?;
                 input = inp;
                 match line {
@@ -868,7 +771,7 @@ fn parse_android_trace<'a>(input: &'a [u8]) -> IResult<&'a [u8], AndroidTrace> {
     }
     let (input, _) = tag(b"SLOW")(input)?;
 
-    let (input, bin_version) = map_res(u16::parse_bin, |x| match x {
+    let (input, bin_version) = map_res(le_u16, |x| match x {
         1 => Ok(Version::One),
         2 => Ok(Version::Two),
         3 => Ok(Version::Three(None)),
@@ -883,49 +786,39 @@ fn parse_android_trace<'a>(input: &'a [u8]) -> IResult<&'a [u8], AndroidTrace> {
         );
     }
 
-    let (input, data_offset) = u16::parse_bin(input)?;
+    let (input, data_offset) = le_u16(input)?;
 
-    let (input, start_time) = u64::parse_bin(input)?;
+    let (input, start_time) = map(le_u64, |start_time| {
+        chrono::DateTime::from_utc(
+            chrono::NaiveDateTime::from_timestamp(
+                (start_time / 1000000) as _,
+                ((start_time % 1000000) * 1000) as _,
+            ),
+            chrono::Utc,
+        )
+    })(input)?;
 
-    ret.start_time = chrono::DateTime::from_utc(
-        chrono::NaiveDateTime::from_timestamp(
-            (start_time / 1000000) as _,
-            ((start_time % 1000000) * 1000) as _,
+    ret.start_time = start_time;
+
+    let ((input, bin_version), header_len) = match bin_version {
+        Version::Three(_) => (
+            map(le_u16, |event_size| {
+                Version::Three(NonZeroU64::new(event_size as _))
+            })(input)?,
+            4 + 2 + 2 + 8 + 2,
         ),
-        chrono::Utc,
-    );
-
-    let (input, bin_version, header_len) = match bin_version {
-        Version::Three(_) => {
-            let (input, event_size) = u16::parse_bin(input)?;
-            (
-                input,
-                Version::Three(NonZeroU64::new(event_size as _)),
-                4 + 2 + 2 + 8 + 2,
-            )
-        }
-        bin_version => (input, bin_version, 4 + 2 + 2 + 8),
+        bin_version => ((input, bin_version), 4 + 2 + 2 + 8),
     };
 
-    let mut input = if header_len < data_offset {
+    let input = if header_len < data_offset {
         take(data_offset - header_len)(input)?.0
     } else {
         input
     };
 
-    let entry_len = match bin_version {
-        Version::Three(Some(len)) => len.get(),
-        _ => 9,
-    };
-
     let parser = event_parser(bin_version, ret.clock);
-    ret.events
-        .reserve(((input.len() as u64) / entry_len) as usize);
-    while let Ok((inp, event)) = parser(input) {
-        input = inp;
-        ret.events.push(event);
-    }
-
+    let (input, events) = many0(parser)(input)?;
+    ret.events = events;
     Ok((input, ret))
 }
 
@@ -959,4 +852,326 @@ pub fn parse(bytes: &[u8]) -> Result<AndroidTrace, Box<dyn error::Error + '_>> {
     }
 }
 
-// TODO tests
+mod tests {
+    #[allow(unused_imports)]
+    use {
+        chrono::DurationRound,
+        crate::*,
+    };
+
+    #[test]
+    fn section_names() {
+        assert_eq!(
+            parse_section(b"*version\n"),
+            Ok((b"" as _, Section::Version))
+        );
+        assert_eq!(
+            parse_section(b"*methods\n"),
+            Ok((b"" as _, Section::Methods))
+        );
+        assert_eq!(
+            parse_section(b"*threads\n"),
+            Ok((b"" as _, Section::Threads))
+        );
+        assert_eq!(parse_section(b"*end\n"), Ok((b"" as _, Section::End)));
+        assert!(parse_section(b"*whatever\n").is_err());
+    }
+
+    #[test]
+    fn header_lines() {
+        assert_eq!(
+            parse_header_line(b"data-file-overflow=false\n"),
+            Ok((b"" as _, HeaderLine::DataFileOverflow(false)))
+        );
+        assert_eq!(
+            parse_header_line(b"data-file-overflow=true\n"),
+            Ok((b"" as _, HeaderLine::DataFileOverflow(true)))
+        );
+        assert_eq!(
+            parse_header_line(b"clock=global\n"),
+            Ok((b"" as _, HeaderLine::Clock(Clock::Global)))
+        );
+        assert_eq!(
+            parse_header_line(b"clock=thread-cpu\n"),
+            Ok((b"" as _, HeaderLine::Clock(Clock::Cpu)))
+        );
+        assert_eq!(
+            parse_header_line(b"clock=wall\n"),
+            Ok((b"" as _, HeaderLine::Clock(Clock::Wall)))
+        );
+        assert_eq!(
+            parse_header_line(b"clock=dual\n"),
+            Ok((b"" as _, HeaderLine::Clock(Clock::Dual)))
+        );
+        assert_eq!(
+            parse_header_line(b"elapsed-time-usec=123456\n"),
+            Ok((
+                b"" as _,
+                HeaderLine::ElapsedTime(Duration::from_micros(123456))
+            ))
+        );
+        assert_eq!(
+            parse_header_line(b"num-method-calls=654321\n"),
+            Ok((b"" as _, HeaderLine::NumMethodCalls(654321)))
+        );
+        assert_eq!(
+            parse_header_line(b"clock-call-overhead-nsec=1337\n"),
+            Ok((
+                b"" as _,
+                HeaderLine::ClockCallOverhead(Duration::from_nanos(1337))
+            ))
+        );
+        assert_eq!(
+            parse_header_line(b"vm=dalvik\n"),
+            Ok((b"" as _, HeaderLine::Vm(Vm::Dalvik)))
+        );
+        assert_eq!(
+            parse_header_line(b"vm=art\n"),
+            Ok((b"" as _, HeaderLine::Vm(Vm::Art)))
+        );
+        assert_eq!(
+            parse_header_line(b"pid=666\n"),
+            Ok((b"" as _, HeaderLine::Pid(666)))
+        );
+        assert_eq!(
+            parse_header_line(b"alloc-size=123\n"),
+            Ok((b"" as _, HeaderLine::AllocSize(123)))
+        );
+        assert_eq!(
+            parse_header_line(b"alloc-count=456\n"),
+            Ok((b"" as _, HeaderLine::AllocCount(456)))
+        );
+        assert_eq!(
+            parse_header_line(b"gc-count=420\n"),
+            Ok((b"" as _, HeaderLine::GcCount(420)))
+        );
+        assert_eq!(
+            parse_thread(b"13337\tA thread\n"),
+            Ok((
+                b"" as _,
+                Thread {
+                    id: 13337,
+                    name: "A thread".into()
+                }
+            ))
+        );
+        assert_eq!(
+            parse_method(b"0xeb0\tclass\tname\tsig\tfile\t123\n"),
+            Ok((
+                b"" as _,
+                Method {
+                    id: 0xEB0 / 4,
+                    class_name: "class".into(),
+                    name: "name".into(),
+                    signature: "sig".into(),
+                    source_file: "file".into(),
+                    source_line: Some(123),
+                }
+            ))
+        );
+        assert_eq!(
+            parse_method(b"0x664\tclazz\tname\tsig\t\n"),
+            Ok((
+                b"" as _,
+                Method {
+                    id: 0x664 / 4,
+                    class_name: "clazz".into(),
+                    name: "name".into(),
+                    signature: "sig".into(),
+                    source_file: "".into(),
+                    source_line: None,
+                }
+            ))
+        );
+        assert_eq!(
+            parse_method(b"0\tclass\tname\tsig\t\t\n"),
+            Ok((
+                b"" as _,
+                Method {
+                    id: 0,
+                    class_name: "class".into(),
+                    name: "name".into(),
+                    signature: "sig".into(),
+                    source_file: "".into(),
+                    source_line: None,
+                }
+            ))
+        );
+        let parser1 = event_parser(Version::One, Clock::Global);
+        assert_eq!(
+            parser1(b"\x45\x04\x00\x00\x00\x01\x00\x00\x00"),
+            Ok((
+                b"" as _,
+                Event {
+                    thread_id: 69,
+                    method_id: 1,
+                    action: Action::Enter,
+                    time: Time::Global(Duration::from_micros(1)),
+                }
+            ))
+        );
+        assert!(parser1(b"\x45\x03\x00\x00\x00\x01\x00\x00\x00").is_err());
+        let parser2 = event_parser(Version::Two, Clock::Wall);
+        assert_eq!(
+            parser2(b"\x39\x05\x09\x00\x00\x00\x01\x00\x00\x00"),
+            Ok((
+                b"" as _,
+                Event {
+                    thread_id: 1337,
+                    method_id: 2,
+                    action: Action::Exit,
+                    time: Time::Monotonic {
+                        cpu: None,
+                        wall: Some(Duration::from_micros(1)),
+                    },
+                }
+            ))
+        );
+        let parser3 = event_parser(Version::Three(NonZeroU64::new(20)), Clock::Dual);
+        assert_eq!(
+            parser3(
+                b"\xFF\xFF\x02\x00\x00\x00\x10\x00\x00\x00\x20\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+            ),
+            Ok((
+                b"" as _,
+                Event {
+                    thread_id: 0xFFFF,
+                    method_id: 0,
+                    action: Action::Unwind,
+                    time: Time::Monotonic {
+                        cpu: Some(Duration::from_micros(0x10)),
+                        wall: Some(Duration::from_micros(0x20)),
+                    }
+                }
+            ))
+        );
+        assert!(parser3(b"\xFF\xFF\x02\x00\x00\x00\x10\x00\x00\x00\x20\x00\x00\x00").is_err());
+
+        let now = chrono::Utc::now();
+        let trace = AndroidTrace {
+            data_file_overflow: true,
+            clock: Clock::Dual,
+            elapsed_time: Duration::from_secs(10),
+            num_method_calls: 2,
+            clock_call_overhead: Duration::from_nanos(100),
+            vm: Vm::Art,
+            start_time: now
+                .duration_trunc(chrono::Duration::from_std(Duration::from_micros(1)).unwrap())
+                .unwrap(),
+            pid: Some(256),
+            gc_trace: Some(GcTrace {
+                alloc_count: 1,
+                gc_count: 2,
+                alloc_size: 3,
+            }),
+            threads: vec![
+                Thread {
+                    id: 1337,
+                    name: "Thread 1".into(),
+                },
+                Thread {
+                    id: 13337,
+                    name: "Thread 2".into(),
+                },
+            ],
+            methods: vec![
+                Method {
+                    id: 0,
+                    name: "meth0".into(),
+                    class_name: "class".into(),
+                    signature: "()V".into(),
+                    source_file: "class.java".into(),
+                    source_line: Some(5),
+                },
+                Method {
+                    id: 1,
+                    name: "meth1".into(),
+                    class_name: "class".into(),
+                    signature: "(I)I".into(),
+                    source_file: "".into(),
+                    source_line: None,
+                },
+            ],
+            events: vec![
+                Event {
+                    method_id: 0,
+                    thread_id: 1337,
+                    time: Time::Monotonic {
+                        cpu: Some(Duration::from_millis(1)),
+                        wall: Some(Duration::from_millis(1)),
+                    },
+                    action: Action::Enter,
+                },
+                Event {
+                    method_id: 1,
+                    thread_id: 13337,
+                    time: Time::Monotonic {
+                        cpu: Some(Duration::from_millis(2)),
+                        wall: Some(Duration::from_millis(2)),
+                    },
+                    action: Action::Enter,
+                },
+                Event {
+                    method_id: 0,
+                    thread_id: 1337,
+                    time: Time::Monotonic {
+                        cpu: Some(Duration::from_millis(2)),
+                        wall: Some(Duration::from_millis(2)),
+                    },
+                    action: Action::Exit,
+                },
+                Event {
+                    method_id: 1,
+                    thread_id: 13337,
+                    time: Time::Monotonic {
+                        cpu: Some(Duration::from_millis(3)),
+                        wall: Some(Duration::from_millis(3)),
+                    },
+                    action: Action::Unwind,
+                },
+            ],
+        };
+
+        let mut iter = trace.iter();
+        let view = iter.next().unwrap();
+        assert_eq!(
+            (view.action(), view.time()),
+            (trace.events[0].action, trace.events[0].time)
+        );
+        assert_eq!(
+            (view.method(), view.thread()),
+            (&trace.methods[0], &trace.threads[0])
+        );
+        let view = iter.next().unwrap();
+        assert_eq!(
+            (view.action(), view.time()),
+            (trace.events[1].action, trace.events[1].time)
+        );
+        assert_eq!(
+            (view.method(), view.thread()),
+            (&trace.methods[1], &trace.threads[1])
+        );
+        let view = iter.next().unwrap();
+        assert_eq!(
+            (view.action(), view.time()),
+            (trace.events[2].action, trace.events[2].time)
+        );
+        assert_eq!(
+            (view.method(), view.thread()),
+            (&trace.methods[0], &trace.threads[0])
+        );
+        let view = iter.next().unwrap();
+        assert_eq!(
+            (view.action(), view.time()),
+            (trace.events[3].action, trace.events[3].time)
+        );
+        assert_eq!(
+            (view.method(), view.thread()),
+            (&trace.methods[1], &trace.threads[1])
+        );
+        assert!(iter.next().is_none());
+
+        let trace2 = parse(&trace.serialize().unwrap()).unwrap();
+        assert_eq!(trace, trace2);
+    }
+}
