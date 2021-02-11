@@ -1,13 +1,13 @@
 pub use chrono;
 use nom::{
     branch::alt,
-    bytes::complete::{is_a, is_not, tag, take, take_while},
+    bytes::complete::{is_not, tag, take, take_while},
     character::complete::{digit1, hex_digit1, tab},
     combinator::{map, map_res, opt, value},
     error::ParseError,
     multi::many0,
     number::complete::{le_u16, le_u32, le_u64, le_u8},
-    sequence::{delimited, pair, terminated, tuple},
+    sequence::{delimited, pair, preceded, terminated, tuple},
     IResult,
 };
 use serde::{Deserialize, Serialize};
@@ -399,47 +399,31 @@ trait Num: Sized {
     }
 }
 
-impl Num for usize {
-    fn from_str_radix(s: &str, radix: u32) -> Result<Self, ParseIntError> {
-        Self::from_str_radix(s, radix)
-    }
+macro_rules! impl_num {
+    [$($type:ty),+] => {
+        $(impl Num for $type {
+            fn from_str_radix(s: &str, radix: u32) -> Result<Self, ParseIntError> {
+                Self::from_str_radix(s, radix)
+            }
+        })+
+    };
 }
 
-impl Num for u64 {
-    fn from_str_radix(s: &str, radix: u32) -> Result<Self, ParseIntError> {
-        Self::from_str_radix(s, radix)
-    }
+impl_num![usize, u64, u32, u16, u8, isize, i64, i32, i16, i8];
+
+fn parse_hex<T: Num>(input: &[u8]) -> IResult<&[u8], T> {
+    preceded(
+        tag("0x"),
+        map_res(hex_digit1, |s| T::from_slice_radix(s, 16)),
+    )(input)
 }
 
-impl Num for u32 {
-    fn from_str_radix(s: &str, radix: u32) -> Result<Self, ParseIntError> {
-        Self::from_str_radix(s, radix)
-    }
+fn parse_dec<T: Num>(input: &[u8]) -> IResult<&[u8], T> {
+    map_res(digit1, |s| T::from_slice_radix(s, 10))(input)
 }
 
-impl Num for u16 {
-    fn from_str_radix(s: &str, radix: u32) -> Result<Self, ParseIntError> {
-        Self::from_str_radix(s, radix)
-    }
-}
-
-impl Num for u8 {
-    fn from_str_radix(s: &str, radix: u32) -> Result<Self, ParseIntError> {
-        Self::from_str_radix(s, radix)
-    }
-}
-
-fn hex_primary<T: Num>(input: &[u8]) -> IResult<&[u8], T> {
-    let (input, _) = tag("0x")(input)?;
-    map_res(hex_digit1, |s| Num::from_slice_radix(s, 16))(input)
-}
-
-fn dec_primary<T: Num + fmt::Debug>(input: &[u8]) -> IResult<&[u8], T> {
-    map_res(digit1, |s| Num::from_slice_radix(s, 10))(input)
-}
-
-fn parse_num<T: Num + fmt::Debug>(input: &[u8]) -> IResult<&[u8], T> {
-    alt((hex_primary, dec_primary))(input)
+fn parse_num<T: Num>(input: &[u8]) -> IResult<&[u8], T> {
+    alt((parse_hex, parse_dec))(input)
 }
 
 fn parse_bool(input: &[u8]) -> IResult<&[u8], bool> {
@@ -485,7 +469,6 @@ fn parse_header_line(input: &[u8]) -> IResult<&[u8], HeaderLine> {
         T: 'a,
         F: FnMut(&'a [u8]) -> IResult<&'a [u8], T, E> + 'a,
         E: ParseError<&'a [u8]> + 'a,
-        E: 'a,
     {
         delimited(pair(tag(tag_name), tag(b"=")), parser, tag(b"\n"))
     }
@@ -498,38 +481,35 @@ fn parse_header_line(input: &[u8]) -> IResult<&[u8], HeaderLine> {
         header_line(b"clock", map(parse_clock, HeaderLine::Clock)),
         header_line(
             b"elapsed-time-usec",
-            map(parse_num::<u64>, |x| {
+            map(parse_num, |x| {
                 HeaderLine::ElapsedTime(Duration::from_micros(x))
             }),
         ),
         header_line(
             b"num-method-calls",
-            map(parse_num::<u64>, HeaderLine::NumMethodCalls),
+            map(parse_num, HeaderLine::NumMethodCalls),
         ),
         header_line(
             b"clock-call-overhead-nsec",
-            map(parse_num::<u64>, |x| {
+            map(parse_num, |x| {
                 HeaderLine::ClockCallOverhead(Duration::from_nanos(x))
             }),
         ),
         header_line(b"vm", map(parse_vm, HeaderLine::Vm)),
-        header_line(b"pid", map(parse_num::<u32>, HeaderLine::Pid)),
-        header_line(
-            b"alloc-count",
-            map(parse_num::<u64>, HeaderLine::AllocCount),
-        ),
-        header_line(b"alloc-size", map(parse_num::<u64>, HeaderLine::AllocSize)),
-        header_line(b"gc-count", map(parse_num::<u64>, HeaderLine::GcCount)),
+        header_line(b"pid", map(parse_num, HeaderLine::Pid)),
+        header_line(b"alloc-count", map(parse_num, HeaderLine::AllocCount)),
+        header_line(b"alloc-size", map(parse_num, HeaderLine::AllocSize)),
+        header_line(b"gc-count", map(parse_num, HeaderLine::GcCount)),
     ))(input)
 }
 
 fn terminated_with<'a>(until: &'a [u8]) -> impl FnMut(&'a [u8]) -> IResult<&'a [u8], &'a str> + 'a {
-    terminated(map_res(is_not(until), str::from_utf8), is_a(until))
+    terminated(map_res(is_not(until), str::from_utf8), tag(until))
 }
 
 fn parse_thread(input: &[u8]) -> IResult<&[u8], Thread> {
     map(
-        pair(terminated(parse_num::<u16>, tab), terminated_with(b"\n")),
+        pair(terminated(parse_num, tab), terminated_with(b"\n")),
         |(id, name)| Thread {
             id,
             name: name.into(),
@@ -547,7 +527,7 @@ fn parse_method(input: &[u8]) -> IResult<&[u8], Method> {
             map_res(take_while(|x| x != b'\n' && x != b'\t'), str::from_utf8),
             alt((
                 value(None, tag(b"\n")),
-                delimited(tag(b"\t"), opt(parse_num::<u32>), tag(b"\n")),
+                delimited(tag(b"\t"), opt(parse_num), tag(b"\n")),
             )),
         )),
         |(id, class_name, name, signature, source_file, source_line)| Method {
@@ -837,10 +817,7 @@ fn parse_android_trace(input: &[u8]) -> IResult<&[u8], AndroidTrace> {
 /// # }
 /// ```
 pub fn parse(bytes: &[u8]) -> Result<AndroidTrace, Box<dyn error::Error + '_>> {
-    match parse_android_trace(bytes) {
-        Ok((_, trace)) => Ok(trace),
-        Err(err) => Err(Box::new(err)),
-    }
+    Ok(parse_android_trace(bytes)?.1)
 }
 
 mod tests {
