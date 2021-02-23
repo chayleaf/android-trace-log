@@ -18,7 +18,7 @@ use std::{
     error, fmt,
     io::{self, Write},
     num::{NonZeroU64, ParseIntError},
-    str,
+    slice, str,
     time::Duration,
 };
 
@@ -561,13 +561,16 @@ fn parse_header_line(input: &[u8]) -> IResult<&[u8], HeaderLine> {
     ))(input)
 }
 
-fn terminated_with<'a>(until: &'a [u8]) -> impl FnMut(&'a [u8]) -> IResult<&'a [u8], &'a str> + 'a {
-    terminated(map_res(is_not(until), str::from_utf8), tag(until))
+fn terminated_with<'a>(until: &'a u8) -> impl FnMut(&'a [u8]) -> IResult<&'a [u8], &'a str> + 'a {
+    terminated(
+        map_res(is_not(slice::from_ref(until)), str::from_utf8),
+        tag(slice::from_ref(until)),
+    )
 }
 
 fn parse_thread(input: &[u8]) -> IResult<&[u8], Thread> {
     map(
-        pair(terminated(parse_num, tab), terminated_with(b"\n")),
+        pair(terminated(parse_num, tab), terminated_with(&b'\n')),
         |(id, name)| Thread {
             id,
             name: name.into(),
@@ -579,9 +582,9 @@ fn parse_method(input: &[u8]) -> IResult<&[u8], Method> {
     map(
         tuple((
             terminated(parse_num::<u32>, tab),
-            terminated_with(b"\t"),
-            terminated_with(b"\t"),
-            terminated_with(b"\t"),
+            terminated_with(&b'\t'),
+            terminated_with(&b'\t'),
+            terminated_with(&b'\t'),
             map_res(take_while(|x| x != b'\n' && x != b'\t'), str::from_utf8),
             alt((
                 value(None, tag(b"\n")),
