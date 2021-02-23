@@ -1,4 +1,4 @@
-# Android Trace Log &emsp; ![https://crates.io/crates/android_trace_log](https://img.shields.io/crates/v/android_trace_log.svg) ![https://docs.rs/android_trace_log](https://docs.rs/android_trace_log/badge.svg)
+# Android Trace Log &emsp; [![crates.io](https://img.shields.io/crates/v/android_trace_log.svg)](https://crates.io/crates/android_trace_log) [![docs.rs](https://docs.rs/android_trace_log/badge.svg)](https://docs.rs/android_trace_log)
 
 A library for handling Android trace files created with android.os.Debug.startMethodTracing
 
