@@ -897,8 +897,8 @@ pub fn parse(bytes: &[u8]) -> Result<AndroidTraceLog, Box<dyn error::Error + '_>
     Ok(parse_android_trace(bytes)?.1)
 }
 
+#[cfg(test)]
 mod tests {
-    #[allow(unused_imports)]
     use {crate::*, chrono::DurationRound};
 
     #[test]
