@@ -10,7 +10,8 @@ use nom::{
     sequence::{delimited, pair, preceded, terminated, tuple},
     IResult,
 };
-use serde::{Deserialize, Serialize};
+#[cfg(feature = "serde")]
+use serde_crate::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
     convert::TryFrom,
@@ -22,7 +23,8 @@ use std::{
 };
 
 /// Clock used for the trace log
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize), serde(crate="serde_crate"))]
 pub enum Clock {
     /// Global time (gettimeofday)
     Global,
@@ -41,7 +43,8 @@ impl Default for Clock {
 }
 
 /// An event time offset since the trace start.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize), serde(crate="serde_crate"))]
 pub enum Time {
     /// Global time (gettimeofday)
     Global(Duration),
@@ -55,7 +58,8 @@ pub enum Time {
 }
 
 /// The process VM
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize), serde(crate="serde_crate"))]
 pub enum Vm {
     /// Dalvik
     Dalvik,
@@ -70,7 +74,8 @@ impl Default for Vm {
 }
 
 /// Garbage collector tracing info
-#[derive(Copy, Clone, Default, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Copy, Clone, Default, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize), serde(crate="serde_crate"))]
 pub struct GcTrace {
     /// Number of allocated objects
     pub alloc_count: u64,
@@ -81,7 +86,8 @@ pub struct GcTrace {
 }
 
 /// A traced thread
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize), serde(crate="serde_crate"))]
 pub struct Thread {
     /// Thread ID
     pub id: u16,
@@ -90,7 +96,8 @@ pub struct Thread {
 }
 
 /// A traced method
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize), serde(crate="serde_crate"))]
 pub struct Method {
     /// Method ID
     pub id: u32,
@@ -107,7 +114,8 @@ pub struct Method {
 }
 
 /// Trace event action
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize), serde(crate="serde_crate"))]
 pub enum Action {
     /// Recorded when entering a method
     Enter,
@@ -118,7 +126,8 @@ pub enum Action {
 }
 
 /// Trace event
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize), serde(crate="serde_crate"))]
 pub struct Event {
     /// Event action
     pub action: Action,
@@ -161,7 +170,8 @@ impl<'a> EventView<'a> {
 }
 
 /// Android trace log
-#[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize), serde(crate="serde_crate"))]
 pub struct AndroidTraceLog {
     /// Whether the trace has overflowed the trace buffer and is missing events
     pub data_file_overflow: bool,
@@ -176,7 +186,7 @@ pub struct AndroidTraceLog {
     /// The process VM used
     pub vm: Vm,
     /// Trace start time
-    #[serde(with = "chrono::serde::ts_nanoseconds")]
+    #[cfg_attr(feature = "serde", serde(with = "chrono::serde::ts_nanoseconds"))]
     pub start_time: chrono::DateTime<chrono::Utc>,
     /// PID of the traced process
     pub pid: Option<u32>,
@@ -604,7 +614,7 @@ impl fmt::Display for Error {
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 enum Version {
     One,
     Two,
@@ -684,7 +694,7 @@ fn event_parser(version: Version, clock: Clock) -> impl Fn(&[u8]) -> IResult<&[u
     }
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 enum Section {
     Version,
     Threads,
