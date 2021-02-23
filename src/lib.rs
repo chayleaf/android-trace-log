@@ -24,7 +24,11 @@ use std::{
 
 /// Clock used for the trace log
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize), serde(crate="serde_crate"))]
+#[cfg_attr(
+    feature = "serde",
+    derive(Serialize, Deserialize),
+    serde(crate = "serde_crate")
+)]
 pub enum Clock {
     /// Global time (gettimeofday)
     Global,
@@ -36,15 +40,13 @@ pub enum Clock {
     Dual,
 }
 
-impl Default for Clock {
-    fn default() -> Self {
-        Self::Global
-    }
-}
-
 /// An event time offset since the trace start.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize), serde(crate="serde_crate"))]
+#[cfg_attr(
+    feature = "serde",
+    derive(Serialize, Deserialize),
+    serde(crate = "serde_crate")
+)]
 pub enum Time {
     /// Global time (gettimeofday)
     Global(Duration),
@@ -59,7 +61,11 @@ pub enum Time {
 
 /// The process VM
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize), serde(crate="serde_crate"))]
+#[cfg_attr(
+    feature = "serde",
+    derive(Serialize, Deserialize),
+    serde(crate = "serde_crate")
+)]
 pub enum Vm {
     /// Dalvik
     Dalvik,
@@ -67,15 +73,13 @@ pub enum Vm {
     Art,
 }
 
-impl Default for Vm {
-    fn default() -> Self {
-        Self::Dalvik
-    }
-}
-
 /// Garbage collector tracing info
-#[derive(Copy, Clone, Default, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize), serde(crate="serde_crate"))]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(
+    feature = "serde",
+    derive(Serialize, Deserialize),
+    serde(crate = "serde_crate")
+)]
 pub struct GcTrace {
     /// Number of allocated objects
     pub alloc_count: u64,
@@ -87,7 +91,11 @@ pub struct GcTrace {
 
 /// A traced thread
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize), serde(crate="serde_crate"))]
+#[cfg_attr(
+    feature = "serde",
+    derive(Serialize, Deserialize),
+    serde(crate = "serde_crate")
+)]
 pub struct Thread {
     /// Thread ID
     pub id: u16,
@@ -97,7 +105,11 @@ pub struct Thread {
 
 /// A traced method
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize), serde(crate="serde_crate"))]
+#[cfg_attr(
+    feature = "serde",
+    derive(Serialize, Deserialize),
+    serde(crate = "serde_crate")
+)]
 pub struct Method {
     /// Method ID
     pub id: u32,
@@ -115,7 +127,11 @@ pub struct Method {
 
 /// Trace event action
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize), serde(crate="serde_crate"))]
+#[cfg_attr(
+    feature = "serde",
+    derive(Serialize, Deserialize),
+    serde(crate = "serde_crate")
+)]
 pub enum Action {
     /// Recorded when entering a method
     Enter,
@@ -127,7 +143,11 @@ pub enum Action {
 
 /// Trace event
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize), serde(crate="serde_crate"))]
+#[cfg_attr(
+    feature = "serde",
+    derive(Serialize, Deserialize),
+    serde(crate = "serde_crate")
+)]
 pub struct Event {
     /// Event action
     pub action: Action,
@@ -140,7 +160,7 @@ pub struct Event {
 }
 
 /// A view into an event with convenience methods for accessing the associated thread and method. Use [`AndroidTraceLog::iter`] to get an iterator over these.
-#[derive(Clone, Debug)]
+#[derive(Copy, Clone, Debug)]
 pub struct EventView<'a> {
     action: Action,
     thread_id: usize,
@@ -170,8 +190,12 @@ impl<'a> EventView<'a> {
 }
 
 /// Android trace log
-#[derive(Clone, Debug, Eq, PartialEq, Hash)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize), serde(crate="serde_crate"))]
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(Serialize, Deserialize),
+    serde(crate = "serde_crate")
+)]
 pub struct AndroidTraceLog {
     /// Whether the trace has overflowed the trace buffer and is missing events
     pub data_file_overflow: bool,
@@ -198,26 +222,6 @@ pub struct AndroidTraceLog {
     pub methods: Vec<Method>,
     /// All events in the trace log
     pub events: Vec<Event>,
-}
-
-impl Default for AndroidTraceLog {
-    fn default() -> Self {
-        use chrono::TimeZone;
-        Self {
-            data_file_overflow: Default::default(),
-            clock: Default::default(),
-            elapsed_time: Default::default(),
-            total_method_calls: Default::default(),
-            clock_call_overhead: Default::default(),
-            vm: Default::default(),
-            start_time: chrono::Utc.ymd(1970, 1, 1).and_hms(0, 0, 0),
-            pid: Default::default(),
-            gc_trace: Default::default(),
-            threads: Default::default(),
-            methods: Default::default(),
-            events: Default::default(),
-        }
-    }
 }
 
 impl AndroidTraceLog {
@@ -716,7 +720,21 @@ fn parse_section(input: &[u8]) -> IResult<&[u8], Section> {
 }
 
 fn parse_android_trace(input: &[u8]) -> IResult<&[u8], AndroidTraceLog> {
-    let mut ret = AndroidTraceLog::default();
+    use chrono::TimeZone;
+    let mut ret = AndroidTraceLog {
+        data_file_overflow: Default::default(),
+        clock: Clock::Global,
+        elapsed_time: Default::default(),
+        total_method_calls: Default::default(),
+        clock_call_overhead: Default::default(),
+        vm: Vm::Dalvik,
+        start_time: chrono::Utc.ymd(1970, 1, 1).and_hms(0, 0, 0),
+        pid: Default::default(),
+        gc_trace: Default::default(),
+        threads: Default::default(),
+        methods: Default::default(),
+        events: Default::default(),
+    };
     let (input, _) = tag(b"*version\n")(input)?;
     let mut section = Section::Version;
     let (input, version) = map_res(parse_num, |x| match x {
@@ -739,6 +757,13 @@ fn parse_android_trace(input: &[u8]) -> IResult<&[u8], AndroidTraceLog> {
                 ))(input)?;
                 input = inp;
                 use HeaderLine::*;
+                fn empty_trace() -> GcTrace {
+                    GcTrace {
+                        alloc_count: 0,
+                        alloc_size: 0,
+                        gc_count: 0,
+                    }
+                }
                 match line {
                     Line::NewSection(sect) => section = sect,
                     Line::Info(DataFileOverflow(v)) => ret.data_file_overflow = v,
@@ -749,15 +774,13 @@ fn parse_android_trace(input: &[u8]) -> IResult<&[u8], AndroidTraceLog> {
                     Line::Info(Vm(v)) => ret.vm = v,
                     Line::Info(Pid(v)) => ret.pid = Some(v),
                     Line::Info(AllocCount(v)) => {
-                        ret.gc_trace
-                            .get_or_insert_with(GcTrace::default)
-                            .alloc_count = v
+                        ret.gc_trace.get_or_insert_with(empty_trace).alloc_count = v
                     }
                     Line::Info(AllocSize(v)) => {
-                        ret.gc_trace.get_or_insert_with(GcTrace::default).alloc_size = v
+                        ret.gc_trace.get_or_insert_with(empty_trace).alloc_size = v
                     }
                     Line::Info(GcCount(v)) => {
-                        ret.gc_trace.get_or_insert_with(GcTrace::default).gc_count = v
+                        ret.gc_trace.get_or_insert_with(empty_trace).gc_count = v
                     }
                 }
             }
