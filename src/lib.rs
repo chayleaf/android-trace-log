@@ -605,7 +605,6 @@ fn parse_method(input: &[u8]) -> IResult<&[u8], Method> {
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 enum Error {
     InvalidEventAction,
-    InvalidFormat,
     UnsupportedVersion,
 }
 
@@ -615,7 +614,6 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidEventAction => write!(f, "invalid event action"),
-            Self::InvalidFormat => write!(f, "invalid file format"),
             Self::UnsupportedVersion => write!(f, "unsupported version"),
         }
     }
