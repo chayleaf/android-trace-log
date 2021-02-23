@@ -1,6 +1,6 @@
 [package]
 name = "android_trace_log"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Ivan Pavlyuk <ivanpavluk00@gmail.com>"]
 edition = "2018"
 description = "A crate for handling Android trace logs created with Debug.startMethodTracing"
