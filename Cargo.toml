@@ -1,20 +1,23 @@
 [package]
 name = "android_trace_log"
-version = "0.2.0"
-authors = ["Ivan Pavlyuk <ivanpavluk00@gmail.com>"]
-edition = "2018"
+version = "0.2.1"
+authors = ["chayleaf <chayleaf-cratesio@pavluk.org>"]
+edition = "2021"
 description = "A crate for handling Android trace logs created with Debug.startMethodTracing"
 readme = "README.md"
-repository = "https://github.com/pavlukivan/android_trace_log/"
+repository = "https://github.com/chayleaf/android_trace_log/"
 license = "0BSD OR MIT OR Apache-2.0"
 keywords = ["android", "trace", "parser"]
 categories = ["parser-implementations"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[package.metadata.docs.rs]
+all-features = true
+
 [dependencies]
 serde_crate = { package = "serde", version = "1.0", features = ["derive"], optional = true }
-nom = { version = "6", default-features = false, features = ["alloc", "std"] }
+nom = { version = "7", default-features = false, features = ["alloc", "std"] }
 log = "0.4"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 

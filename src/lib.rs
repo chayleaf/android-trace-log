@@ -17,7 +17,7 @@ use std::{
     convert::TryFrom,
     error, fmt,
     io::{self, Write},
-    num::{NonZeroU64, ParseIntError},
+    num::{NonZeroUsize, ParseIntError},
     slice, str,
     time::Duration,
 };
@@ -172,18 +172,22 @@ pub struct EventView<'a> {
 
 impl<'a> EventView<'a> {
     /// Event action
+    #[must_use]
     pub fn action(&self) -> Action {
         self.action
     }
     /// Event thread
+    #[must_use]
     pub fn thread(&self) -> &Thread {
         self.threads.get(self.thread_id).unwrap()
     }
     /// Event method
+    #[must_use]
     pub fn method(&self) -> &Method {
         self.methods.get(self.method_id).unwrap()
     }
     /// Event time
+    #[must_use]
     pub fn time(&self) -> Time {
         self.time
     }
@@ -226,10 +230,11 @@ pub struct AndroidTraceLog {
 
 impl AndroidTraceLog {
     /// Verifies the object can be serialized and iterated over
+    #[must_use]
     pub fn valid(&self) -> bool {
         let method_ids = self.methods.iter().map(|x| x.id).collect::<HashSet<_>>();
         let thread_ids = self.threads.iter().map(|x| x.id).collect::<HashSet<_>>();
-        for event in self.events.iter() {
+        for event in &self.events {
             if !method_ids.contains(&event.method_id) || !thread_ids.contains(&event.thread_id) {
                 return false;
             }
@@ -245,15 +250,15 @@ impl AndroidTraceLog {
                         cpu: Some(_),
                         wall: None,
                     },
-                ) => {}
-                (
+                )
+                | (
                     Clock::Wall,
                     Time::Monotonic {
                         cpu: None,
                         wall: Some(_),
                     },
-                ) => {}
-                (
+                )
+                | (
                     Clock::Dual,
                     Time::Monotonic {
                         cpu: Some(_),
@@ -262,7 +267,7 @@ impl AndroidTraceLog {
                 ) => {}
                 _ => return false,
             }
-            if event.method_id > (0xFFFFFFFF >> 2) {
+            if event.method_id > (0xFFFF_FFFF >> 2) {
                 return false;
             }
         }
@@ -271,14 +276,14 @@ impl AndroidTraceLog {
 
     /// Serialize the trace into a Write object
     ///
+    /// # Panics
     /// Panics if using global clock (only used in file version 1) with 2-byte thread IDs (only used in file version 2+)
     /// or if some event's time doesn't match the trace's `clock` value. Will not panic if [`valid`](AndroidTraceLog::valid) returned `true`.
     pub fn serialize_into<W: Write>(&self, w: &mut W) -> io::Result<()> {
         writeln!(w, "*version")?;
         let version: u16 = match self.clock {
             Clock::Global => 1,
-            Clock::Cpu => 2,
-            Clock::Wall => 2,
+            Clock::Cpu | Clock::Wall => 2,
             Clock::Dual => 3,
         };
         writeln!(w, "{}", version)?;
@@ -317,11 +322,11 @@ impl AndroidTraceLog {
             writeln!(w, "gc-count={}", gc.gc_count)?;
         }
         writeln!(w, "*threads")?;
-        for thread in self.threads.iter() {
+        for thread in &self.threads {
             writeln!(w, "{}\t{}", thread.id, thread.name)?;
         }
         writeln!(w, "*methods")?;
-        for method in self.methods.iter() {
+        for method in &self.methods {
             if version <= 1 || method.id > 0 {
                 write!(w, "{:#x}", method.id << 2)
             } else {
@@ -344,8 +349,8 @@ impl AndroidTraceLog {
         w.write_all(&32u16.to_le_bytes())?;
         let start_time = self.start_time.naive_utc();
         w.write_all(
-            &(start_time.timestamp() as u64 * 1000000
-                + (start_time.timestamp_nanos() as u64 / 1000) % 1000000)
+            &(start_time.timestamp() as u64 * 1_000_000
+                + (start_time.timestamp_nanos() as u64 / 1000) % 1_000_000)
                 .to_le_bytes(),
         )?;
         if version >= 3 {
@@ -363,7 +368,7 @@ impl AndroidTraceLog {
             // Header padding
             w.write_all(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0")?;
         };
-        for event in self.events.iter() {
+        for event in &self.events {
             if version == 1 {
                 w.write_all(
                     &u8::try_from(event.thread_id)
@@ -381,19 +386,19 @@ impl AndroidTraceLog {
                 };
             w.write_all(&id.to_le_bytes())?;
             let (time_a, time_b) = match (self.clock, event.time) {
-                (Clock::Global, Time::Global(time)) => (time, None),
-                (
+                (Clock::Global, Time::Global(time))
+                | (
                     Clock::Cpu,
                     Time::Monotonic {
                         cpu: Some(time),
                         wall: None,
                     },
-                ) => (time, None),
-                (
+                )
+                | (
                     Clock::Wall,
                     Time::Monotonic {
-                        wall: Some(time),
                         cpu: None,
+                        wall: Some(time),
                     },
                 ) => (time, None),
                 (
@@ -623,7 +628,7 @@ impl fmt::Display for Error {
 enum Version {
     One,
     Two,
-    Three(Option<NonZeroU64>),
+    Three(Option<NonZeroUsize>),
 }
 
 fn event_parser(version: Version, clock: Clock) -> impl Fn(&[u8]) -> IResult<&[u8], Event> {
@@ -634,7 +639,7 @@ fn event_parser(version: Version, clock: Clock) -> impl Fn(&[u8]) -> IResult<&[u
     };
     move |input: &[u8]| -> IResult<&[u8], Event> {
         let (input, thread_id) = match version {
-            Version::One => map(le_u8, |thread_id| thread_id.into())(input)?,
+            Version::One => map(le_u8, From::from)(input)?,
             _ => le_u16(input)?,
         };
         let (input, (action, method_id)) = map_res(le_u32, |x| {
@@ -647,11 +652,11 @@ fn event_parser(version: Version, clock: Clock) -> impl Fn(&[u8]) -> IResult<&[u
             Ok((action, x >> 2))
         })(input)?;
         let (input, time_a) = le_u32(input)?;
-        let time_a = Duration::from_micros(time_a as _);
+        let time_a = Duration::from_micros(time_a.into());
         let (mut input, time) = match clock {
             Clock::Dual => map(le_u32, |time_b| Time::Monotonic {
                 cpu: Some(time_a),
-                wall: Some(Duration::from_micros(time_b as _)),
+                wall: Some(Duration::from_micros(time_b.into())),
             })(input)?,
             Clock::Cpu => (
                 input,
@@ -723,18 +728,18 @@ fn parse_section(input: &[u8]) -> IResult<&[u8], Section> {
 fn parse_android_trace(input: &[u8]) -> IResult<&[u8], AndroidTraceLog> {
     use chrono::TimeZone;
     let mut ret = AndroidTraceLog {
-        data_file_overflow: Default::default(),
+        data_file_overflow: false,
         clock: Clock::Global,
-        elapsed_time: Default::default(),
-        total_method_calls: Default::default(),
-        clock_call_overhead: Default::default(),
+        elapsed_time: Duration::default(),
+        total_method_calls: 0,
+        clock_call_overhead: Duration::default(),
         vm: Vm::Dalvik,
         start_time: chrono::Utc.ymd(1970, 1, 1).and_hms(0, 0, 0),
-        pid: Default::default(),
-        gc_trace: Default::default(),
-        threads: Default::default(),
-        methods: Default::default(),
-        events: Default::default(),
+        pid: None,
+        gc_trace: None,
+        threads: vec![],
+        methods: vec![],
+        events: vec![],
     };
     let (input, _) = tag(b"*version\n")(input)?;
     let mut section = Section::Version;
@@ -748,6 +753,16 @@ fn parse_android_trace(input: &[u8]) -> IResult<&[u8], AndroidTraceLog> {
     loop {
         match section {
             Section::Version => {
+                use HeaderLine::*;
+
+                fn empty_trace() -> GcTrace {
+                    GcTrace {
+                        alloc_count: 0,
+                        alloc_size: 0,
+                        gc_count: 0,
+                    }
+                }
+
                 enum Line {
                     NewSection(Section),
                     Info(HeaderLine),
@@ -757,14 +772,6 @@ fn parse_android_trace(input: &[u8]) -> IResult<&[u8], AndroidTraceLog> {
                     map(parse_header_line, Line::Info),
                 ))(input)?;
                 input = inp;
-                use HeaderLine::*;
-                fn empty_trace() -> GcTrace {
-                    GcTrace {
-                        alloc_count: 0,
-                        alloc_size: 0,
-                        gc_count: 0,
-                    }
-                }
                 match line {
                     Line::NewSection(sect) => section = sect,
                     Line::Info(DataFileOverflow(v)) => ret.data_file_overflow = v,
@@ -775,13 +782,13 @@ fn parse_android_trace(input: &[u8]) -> IResult<&[u8], AndroidTraceLog> {
                     Line::Info(Vm(v)) => ret.vm = v,
                     Line::Info(Pid(v)) => ret.pid = Some(v),
                     Line::Info(AllocCount(v)) => {
-                        ret.gc_trace.get_or_insert_with(empty_trace).alloc_count = v
+                        ret.gc_trace.get_or_insert_with(empty_trace).alloc_count = v;
                     }
                     Line::Info(AllocSize(v)) => {
-                        ret.gc_trace.get_or_insert_with(empty_trace).alloc_size = v
+                        ret.gc_trace.get_or_insert_with(empty_trace).alloc_size = v;
                     }
                     Line::Info(GcCount(v)) => {
-                        ret.gc_trace.get_or_insert_with(empty_trace).gc_count = v
+                        ret.gc_trace.get_or_insert_with(empty_trace).gc_count = v;
                     }
                 }
             }
@@ -840,8 +847,8 @@ fn parse_android_trace(input: &[u8]) -> IResult<&[u8], AndroidTraceLog> {
     let (input, start_time) = map(le_u64, |start_time| {
         chrono::DateTime::from_utc(
             chrono::NaiveDateTime::from_timestamp(
-                (start_time / 1000000) as _,
-                ((start_time % 1000000) * 1000) as _,
+                (start_time / 1_000_000) as i64,
+                ((start_time % 1_000_000) * 1000) as u32,
             ),
             chrono::Utc,
         )
@@ -852,7 +859,7 @@ fn parse_android_trace(input: &[u8]) -> IResult<&[u8], AndroidTraceLog> {
     let ((input, bin_version), header_len) = match bin_version {
         Version::Three(_) => (
             map(le_u16, |event_size| {
-                Version::Three(NonZeroU64::new(event_size as _))
+                Version::Three(NonZeroUsize::new(event_size as _))
             })(input)?,
             4 + 2 + 2 + 8 + 2,
         ),
@@ -1079,7 +1086,7 @@ mod tests {
                 }
             ))
         );
-        let parser3 = event_parser(Version::Three(NonZeroU64::new(20)), Clock::Dual);
+        let parser3 = event_parser(Version::Three(NonZeroUsize::new(20)), Clock::Dual);
         assert_eq!(
             parser3(
                 b"\xFF\xFF\x02\x00\x00\x00\x10\x00\x00\x00\x20\x00\x00\x00\x00\x00\x00\x00\x00\x00"
