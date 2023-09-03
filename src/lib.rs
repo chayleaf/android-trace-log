@@ -607,6 +607,7 @@ fn parse_method(input: &[u8]) -> IResult<&[u8], Method> {
     )(input)
 }
 
+#[non_exhaustive]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 enum Error {
     InvalidEventAction,
@@ -736,7 +737,7 @@ fn parse_android_trace(input: &[u8]) -> IResult<&[u8], AndroidTraceLog> {
         total_method_calls: 0,
         clock_call_overhead: Duration::default(),
         vm: Vm::Dalvik,
-        start_time: chrono::Utc.ymd(1970, 1, 1).and_hms(0, 0, 0),
+        start_time: chrono::Utc.with_ymd_and_hms(1970, 1, 1, 0, 0, 0).unwrap(),
         pid: None,
         gc_trace: None,
         threads: vec![],
@@ -1266,9 +1267,7 @@ mod tests {
 
         // Overwrite timestamp
         let mut bytes = trace.serialize().unwrap();
-        for i in 158..166 {
-            bytes[i] = 0xff;
-        }
+        bytes[158..166].copy_from_slice(b"\xff\xff\xff\xff\xff\xff\xff\xff");
 
         assert!(parse(&bytes).is_err());
     }
