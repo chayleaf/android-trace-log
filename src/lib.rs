@@ -611,6 +611,7 @@ fn parse_method(input: &[u8]) -> IResult<&[u8], Method> {
 enum Error {
     InvalidEventAction,
     UnsupportedVersion,
+    InvalidStartTime,
 }
 
 impl error::Error for Error {}
@@ -620,6 +621,7 @@ impl fmt::Display for Error {
         match self {
             Self::InvalidEventAction => write!(f, "invalid event action"),
             Self::UnsupportedVersion => write!(f, "unsupported version"),
+            Self::InvalidStartTime => write!(f, "invalid start time"),
         }
     }
 }
@@ -844,15 +846,20 @@ fn parse_android_trace(input: &[u8]) -> IResult<&[u8], AndroidTraceLog> {
 
     let (input, data_offset) = le_u16(input)?;
 
-    let (input, start_time) = map(le_u64, |start_time| {
-        chrono::DateTime::from_utc(
-            chrono::NaiveDateTime::from_timestamp(
+    let (input, start_time) =
+        map_res(
+            le_u64,
+            |start_time| match chrono::NaiveDateTime::from_timestamp_opt(
                 (start_time / 1_000_000) as i64,
                 ((start_time % 1_000_000) * 1000) as u32,
-            ),
-            chrono::Utc,
-        )
-    })(input)?;
+            ) {
+                Some(start_time) => Ok(chrono::DateTime::from_naive_utc_and_offset(
+                    start_time,
+                    chrono::Utc,
+                )),
+                None => Err(Error::InvalidStartTime),
+            },
+        )(input)?;
 
     ret.start_time = start_time;
 
@@ -1236,5 +1243,33 @@ mod tests {
 
         let trace2 = parse(&trace.serialize().unwrap()).unwrap();
         assert_eq!(trace, trace2);
+    }
+
+    #[test]
+    fn invalid_start_time_does_not_panic() {
+        let trace = AndroidTraceLog {
+            data_file_overflow: true,
+            clock: Clock::Global,
+            elapsed_time: Duration::from_secs(0),
+            total_method_calls: 0,
+            clock_call_overhead: Duration::from_nanos(0),
+            vm: Vm::Art,
+            start_time: chrono::Utc::now()
+                .duration_trunc(chrono::Duration::from_std(Duration::from_micros(1)).unwrap())
+                .unwrap(),
+            pid: Some(0),
+            gc_trace: None,
+            threads: vec![],
+            methods: vec![],
+            events: vec![],
+        };
+
+        // Overwrite timestamp
+        let mut bytes = trace.serialize().unwrap();
+        for i in 158..166 {
+            bytes[i] = 0xff;
+        }
+
+        assert!(parse(&bytes).is_err());
     }
 }
