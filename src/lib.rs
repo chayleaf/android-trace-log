@@ -521,6 +521,8 @@ enum HeaderLine {
     AllocCount(u64),
     AllocSize(u64),
     GcCount(u64),
+    /// A known header line whose value is not stored
+    Ignored,
 }
 
 fn parse_header_line(input: &[u8]) -> IResult<&[u8], HeaderLine> {
@@ -563,6 +565,15 @@ fn parse_header_line(input: &[u8]) -> IResult<&[u8], HeaderLine> {
         header_line(b"alloc-count", map(parse_num, HeaderLine::AllocCount)),
         header_line(b"alloc-size", map(parse_num, HeaderLine::AllocSize)),
         header_line(b"gc-count", map(parse_num, HeaderLine::GcCount)),
+        // Added in Android 17 (API 37)
+        header_line(b"is_streaming", value(HeaderLine::Ignored, parse_bool)),
+        header_line(b"is_precise_trace", value(HeaderLine::Ignored, parse_bool)),
+        header_line(b"end_time", value(HeaderLine::Ignored, parse_num::<u64>)),
+        header_line(b"end_tsc", value(HeaderLine::Ignored, parse_num::<u64>)),
+        header_line(
+            b"compilation-filter",
+            value(HeaderLine::Ignored, take_while(|c| c != b'\n')),
+        ),
     ))(input)
 }
 
@@ -793,6 +804,7 @@ fn parse_android_trace(input: &[u8]) -> IResult<&[u8], AndroidTraceLog> {
                     Line::Info(GcCount(v)) => {
                         ret.gc_trace.get_or_insert_with(empty_trace).gc_count = v;
                     }
+                    Line::Info(Ignored) => {}
                 }
             }
             Section::Threads => {
@@ -1003,6 +1015,29 @@ mod tests {
             parse_header_line(b"gc-count=420\n"),
             Ok((b"" as _, HeaderLine::GcCount(420)))
         );
+        assert_eq!(
+            parse_header_line(b"is_streaming=false\n"),
+            Ok((b"" as _, HeaderLine::Ignored))
+        );
+        assert_eq!(
+            parse_header_line(b"is_precise_trace=true\n"),
+            Ok((b"" as _, HeaderLine::Ignored))
+        );
+        assert_eq!(
+            parse_header_line(b"end_time=1642106300035\n"),
+            Ok((b"" as _, HeaderLine::Ignored))
+        );
+        assert_eq!(
+            parse_header_line(b"end_tsc=7762889077040\n"),
+            Ok((b"" as _, HeaderLine::Ignored))
+        );
+        assert_eq!(
+            parse_header_line(b"compilation-filter=run-from-apk\n"),
+            Ok((b"" as _, HeaderLine::Ignored))
+        );
+        assert!(parse_header_line(b"is_streaming=maybe\n").is_err());
+        assert!(parse_header_line(b"end_time=never\n").is_err());
+        assert!(parse_header_line(b"unknown=1\n").is_err());
     }
     #[test]
     fn threads() {
@@ -1270,5 +1305,45 @@ mod tests {
         bytes[158..166].copy_from_slice(b"\xff\xff\xff\xff\xff\xff\xff\xff");
 
         assert!(parse(&bytes).is_err());
+    }
+
+    #[test]
+    fn android_17_header() {
+        let trace = AndroidTraceLog {
+            data_file_overflow: false,
+            clock: Clock::Dual,
+            elapsed_time: Duration::from_micros(9407646),
+            total_method_calls: 4341,
+            clock_call_overhead: Duration::from_nanos(273),
+            vm: Vm::Art,
+            start_time: chrono::Utc::now()
+                .duration_trunc(chrono::Duration::from_std(Duration::from_micros(1)).unwrap())
+                .unwrap(),
+            pid: Some(4471),
+            gc_trace: None,
+            threads: vec![Thread {
+                id: 4471,
+                name: "main".into(),
+            }],
+            methods: vec![],
+            events: vec![],
+        };
+
+        let bytes = trace.serialize().unwrap();
+        let pos = bytes
+            .windows(b"*threads\n".len())
+            .position(|w| w == b"*threads\n")
+            .unwrap();
+        let mut android_17 = bytes[..pos].to_vec();
+        android_17.extend_from_slice(
+            b"is_streaming=false\n\
+            is_precise_trace=true\n\
+            end_time=1642106300035\n\
+            end_tsc=7762889077040\n\
+            compilation-filter=run-from-apk\n",
+        );
+        android_17.extend_from_slice(&bytes[pos..]);
+
+        assert_eq!(parse(&android_17).unwrap(), trace);
     }
 }
