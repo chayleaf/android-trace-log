@@ -634,7 +634,11 @@ enum Version {
     Three(Option<NonZeroUsize>),
 }
 
-fn event_parser(version: Version, clock: Clock) -> impl Fn(&[u8]) -> IResult<&[u8], Event> {
+fn event_parser(
+    version: Version,
+    clock: Clock,
+    limits: &mut Limits,
+) -> impl FnMut(&[u8]) -> IResult<&[u8], Event> + '_ {
     let clock = match (version, clock) {
         (Version::One, _) => Clock::Global,
         (Version::Two, Clock::Dual) => Clock::Cpu, // Should be an error but I'm too lazy
@@ -695,6 +699,8 @@ fn event_parser(version: Version, clock: Clock) -> impl Fn(&[u8]) -> IResult<&[u
             }
         }
 
+        limits.spend_event(input)?;
+
         Ok((
             input,
             Event {
@@ -728,7 +734,7 @@ fn parse_section(input: &[u8]) -> IResult<&[u8], Section> {
     )(input)
 }
 
-fn parse_android_trace(input: &[u8]) -> IResult<&[u8], AndroidTraceLog> {
+fn parse_android_trace(input: &[u8], mut limits: Limits) -> IResult<&[u8], AndroidTraceLog> {
     use chrono::TimeZone;
     let mut ret = AndroidTraceLog {
         data_file_overflow: false,
@@ -807,7 +813,10 @@ fn parse_android_trace(input: &[u8]) -> IResult<&[u8], AndroidTraceLog> {
                 input = inp;
                 match line {
                     Line::NewSection(sect) => section = sect,
-                    Line::Thread(thread) => ret.threads.push(thread),
+                    Line::Thread(thread) => {
+                        limits.spend_thread(input)?;
+                        ret.threads.push(thread);
+                    }
                 }
             }
             Section::Methods => {
@@ -822,7 +831,10 @@ fn parse_android_trace(input: &[u8]) -> IResult<&[u8], AndroidTraceLog> {
                 input = inp;
                 match line {
                     Line::NewSection(sect) => section = sect,
-                    Line::Method(method) => ret.methods.push(method),
+                    Line::Method(method) => {
+                        limits.spend_method(input)?;
+                        ret.methods.push(method);
+                    }
                 }
             }
             Section::End => break,
@@ -880,10 +892,62 @@ fn parse_android_trace(input: &[u8]) -> IResult<&[u8], AndroidTraceLog> {
         input
     };
 
-    let parser = event_parser(bin_version, ret.clock);
+    let parser = event_parser(bin_version, ret.clock, &mut limits);
     let (input, events) = many0(parser)(input)?;
     ret.events = events;
     Ok((input, ret))
+}
+
+struct LimitError<'a>(&'a [u8]);
+
+impl<'a> From<LimitError<'a>> for nom::Err<nom::error::Error<&'a [u8]>> {
+    fn from(error: LimitError<'a>) -> Self {
+        Self::Failure(nom::error::Error::new(
+            error.0,
+            nom::error::ErrorKind::TooLarge,
+        ))
+    }
+}
+
+/// Defines how many entities a trace log may contain.
+pub struct Limits {
+    pub threads: usize,
+    pub methods: usize,
+    pub events: usize,
+}
+
+impl Limits {
+    fn spend_thread<'a>(&mut self, input: &'a [u8]) -> Result<(), LimitError<'a>> {
+        match self.threads.checked_sub(1) {
+            None => return Err(LimitError(input)),
+            Some(new_limit) => self.threads = new_limit,
+        }
+        Ok(())
+    }
+    fn spend_method<'a>(&mut self, input: &'a [u8]) -> Result<(), LimitError<'a>> {
+        match self.methods.checked_sub(1) {
+            None => return Err(LimitError(input)),
+            Some(new_limit) => self.methods = new_limit,
+        }
+        Ok(())
+    }
+    fn spend_event<'a>(&mut self, input: &'a [u8]) -> Result<(), LimitError<'a>> {
+        match self.events.checked_sub(1) {
+            None => return Err(LimitError(input)),
+            Some(new_limit) => self.events = new_limit,
+        }
+        Ok(())
+    }
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            threads: usize::MAX,
+            methods: usize::MAX,
+            events: usize::MAX,
+        }
+    }
 }
 
 /// Parse a byte array into an android trace
@@ -910,7 +974,15 @@ fn parse_android_trace(input: &[u8]) -> IResult<&[u8], AndroidTraceLog> {
 /// # }
 /// ```
 pub fn parse(bytes: &[u8]) -> Result<AndroidTraceLog, Box<dyn error::Error + '_>> {
-    Ok(parse_android_trace(bytes)?.1)
+    Ok(parse_android_trace(bytes, Limits::default())?.1)
+}
+
+/// Like [`parse`], but with [`Limits`] on the number of entities.
+pub fn parse_with_limits(
+    bytes: &[u8],
+    limits: Limits,
+) -> Result<AndroidTraceLog, Box<dyn error::Error + '_>> {
+    Ok(parse_android_trace(bytes, limits)?.1)
 }
 
 #[cfg(test)]
@@ -1064,7 +1136,8 @@ mod tests {
     }
     #[test]
     fn events() {
-        let parser1 = event_parser(Version::One, Clock::Global);
+        let mut limits1 = Limits::default();
+        let mut parser1 = event_parser(Version::One, Clock::Global, &mut limits1);
         assert_eq!(
             parser1(b"\x45\x04\x00\x00\x00\x01\x00\x00\x00"),
             Ok((
@@ -1078,7 +1151,8 @@ mod tests {
             ))
         );
         assert!(parser1(b"\x45\x03\x00\x00\x00\x01\x00\x00\x00").is_err());
-        let parser2 = event_parser(Version::Two, Clock::Wall);
+        let mut limits2 = Limits::default();
+        let mut parser2 = event_parser(Version::Two, Clock::Wall, &mut limits2);
         assert_eq!(
             parser2(b"\x39\x05\x09\x00\x00\x00\x01\x00\x00\x00"),
             Ok((
@@ -1094,7 +1168,12 @@ mod tests {
                 }
             ))
         );
-        let parser3 = event_parser(Version::Three(NonZeroUsize::new(20)), Clock::Dual);
+        let mut limits3 = Limits::default();
+        let mut parser3 = event_parser(
+            Version::Three(NonZeroUsize::new(20)),
+            Clock::Dual,
+            &mut limits3,
+        );
         assert_eq!(
             parser3(
                 b"\xFF\xFF\x02\x00\x00\x00\x10\x00\x00\x00\x20\x00\x00\x00\x00\x00\x00\x00\x00\x00"
@@ -1116,9 +1195,26 @@ mod tests {
     }
 
     #[test]
-    fn trace_and_event_view() {
+    fn event_limit_failure_preserves_remaining_input() {
+        let bytes = b"\x45\x04\x00\x00\x00\x01\x00\x00\x00tail";
+        let mut limits = Limits {
+            events: 0,
+            ..Limits::default()
+        };
+        let parser = event_parser(Version::One, Clock::Global, &mut limits);
+
+        assert_eq!(
+            many0(parser)(bytes),
+            Err(nom::Err::Failure(nom::error::Error::new(
+                &bytes[9..],
+                nom::error::ErrorKind::TooLarge,
+            )))
+        );
+    }
+
+    fn example_trace() -> AndroidTraceLog {
         let now = chrono::Utc::now();
-        let trace = AndroidTraceLog {
+        AndroidTraceLog {
             data_file_overflow: true,
             clock: Clock::Dual,
             elapsed_time: Duration::from_secs(10),
@@ -1200,8 +1296,12 @@ mod tests {
                     action: Action::Unwind,
                 },
             ],
-        };
+        }
+    }
 
+    #[test]
+    fn trace_and_event_view() {
+        let trace = example_trace();
         let mut iter = trace.iter();
         let view = iter.next().unwrap();
         assert_eq!(
@@ -1244,6 +1344,81 @@ mod tests {
 
         let trace2 = parse(&trace.serialize().unwrap()).unwrap();
         assert_eq!(trace, trace2);
+    }
+
+    #[test]
+    fn exceeded_trace_limits_are_failures() {
+        let trace = example_trace();
+        let bytes = trace.serialize().unwrap();
+        for (entity, limits) in [
+            (
+                "threads",
+                Limits {
+                    threads: trace.threads.len() - 1,
+                    ..Limits::default()
+                },
+            ),
+            (
+                "methods",
+                Limits {
+                    methods: trace.methods.len() - 1,
+                    ..Limits::default()
+                },
+            ),
+            (
+                "events",
+                Limits {
+                    events: trace.events.len() - 1,
+                    ..Limits::default()
+                },
+            ),
+        ] {
+            let result = parse_android_trace(&bytes, limits);
+            assert!(
+                matches!(
+                    result,
+                    Err(nom::Err::Failure(nom::error::Error {
+                        code: nom::error::ErrorKind::TooLarge,
+                        ..
+                    }))
+                ),
+                "expected a limit failure for {entity}, got {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn exact_trace_limits_succeed() {
+        let trace = example_trace();
+        let bytes = trace.serialize().unwrap();
+        let limits = Limits {
+            threads: trace.threads.len(),
+            methods: trace.methods.len(),
+            events: trace.events.len(),
+        };
+
+        let (remaining, parsed) = parse_android_trace(&bytes, limits).unwrap();
+        assert!(remaining.is_empty());
+        assert_eq!(parsed, trace);
+    }
+
+    #[test]
+    fn zero_limits_allow_an_empty_trace() {
+        let mut trace = example_trace();
+        trace.threads.clear();
+        trace.methods.clear();
+        trace.events.clear();
+        trace.total_method_calls = 0;
+        let bytes = trace.serialize().unwrap();
+        let limits = Limits {
+            threads: 0,
+            methods: 0,
+            events: 0,
+        };
+
+        let (remaining, parsed) = parse_android_trace(&bytes, limits).unwrap();
+        assert!(remaining.is_empty());
+        assert_eq!(parsed, trace);
     }
 
     #[test]
